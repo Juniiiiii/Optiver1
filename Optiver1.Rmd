@@ -92,6 +92,31 @@ regression_model <- function(meaned_df) {
 }
 ```
 
+```{r}
+library(rugarch)
+ARMA_GARCH_model <- function(bucket) {
+  spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)), 
+                   mean.model = list(armaOrder = c(1, 1)), 
+                   distribution.model = "norm")
+  log_return <- calculate_log_return(bucket)
+  ARM <- ugarchfit(spec = spec, data = log_return %>% filter(seconds_in_bucket <= 480) %>% pull(log_return), solver = 'hybrid')
+  setfixed(spec) <- as.list(coef(ARM))
+  
+  future.path <- fitted(ugarchpath(spec, n.sim = 30, m.sim = 1000))
+  
+  future.path[is.na(future.path)] <- 0
+  
+  return (mean(sqrt(colSums(future.path ^ 2))))
+}
+
+asdf <- ARMA_GARCH_model(one.bucket)
+asdf
+
+
+```
+
+
+
 
 
 

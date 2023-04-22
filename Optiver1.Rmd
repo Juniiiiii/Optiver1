@@ -47,7 +47,17 @@ one.bucket <- calculate_WAP_BidAsk(one.bucket)
 one.bucket
 ```
 
+``` {r}
+calculate_log_return <- function(bucket) {
+  sec <- bucket %>% pull(seconds_in_bucket)
+  price <- bucket %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  df <- data.frame("seconds_in_bucket" = sec[-1], "log_return" = log_r)
+  return (df)
+}
 
+
+```
 
 
 something about seconds being skipped and just interpolating it copy paste the first value from the missing seconds to the next

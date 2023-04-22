@@ -112,17 +112,30 @@ ARMA_GARCH_model <- function(bucket) {
   ARM <- ugarchfit(spec = spec, data = log_return %>% filter(seconds_in_bucket <= 480) %>% pull(log_return), solver = 'hybrid')
   setfixed(spec) <- as.list(coef(ARM))
   
+  predicted <- c()
+  
+  
   future.path <- fitted(ugarchpath(spec, n.sim = 30, m.sim = 1000))
-  
   future.path[is.na(future.path)] <- 0
+  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
   
-  return (mean(sqrt(colSums(future.path ^ 2))))
+  future.path <- fitted(ugarchpath(spec, n.sim = 60, m.sim = 1000))
+  future.path[is.na(future.path)] <- 0
+  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
+  
+  future.path <- fitted(ugarchpath(spec, n.sim = 90, m.sim = 1000))
+  future.path[is.na(future.path)] <- 0
+  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
+  
+  future.path <- fitted(ugarchpath(spec, n.sim = 120, m.sim = 1000))
+  future.path[is.na(future.path)] <- 0
+  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
+  
+  mean_predict <- mean(predicted)
+  mean_test.Y <- mean(calculate_using_mean_time_bucket(bucket, 30)[17:20, "volatility"])
+  print(mean_predict/mean_test.Y)
 }
-
-asdf <- ARMA_GARCH_model(one.bucket)
-asdf
-
-
+ARMA_GARCH_model(one.bucket)
 ```
 
 

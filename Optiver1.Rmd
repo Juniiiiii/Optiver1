@@ -74,16 +74,24 @@ calculate_using_mean_time_bucket <- function(bucket, interval) {
   
   log_bucket <- log_return_df %>% mutate(time_bucket = ceiling(seconds_in_bucket/interval))
   vol <- aggregate(log_return ~ time_bucket, data = log_bucket, FUN = comp_vol)
-  
+  colnames(vol) <- c("time_bucket", "volatility")
   temp1 <- merge(WAP, BAS, by.x = "time_bucket")
   temp2 <- merge(temp1, num_order, by.x = "time_bucket")
   temp3 <- merge(temp2, vol, by.x = "time_bucket")
   return (temp3)
 }
-
-test <- calculate_using_mean_time_bucket(one.bucket, 30)
-test
 ```
+
+```{r}
+regression_model <- function(meaned_df) {
+  train.X <- meaned_df[1:16, ] %>% select(-c("volatility"))
+  train.Y <- meaned_df[1:16, ] %>% select("volatility")
+  test.X <- meaned_df[17:20, ] %>% select(-c("volatility"))
+  test.Y <- meaned_df[17:20, ] %>% select("volatility")
+  
+}
+```
+
 
 
 

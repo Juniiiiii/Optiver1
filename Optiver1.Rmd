@@ -1,0 +1,289 @@
+---
+title: "Optiver1"
+author: "Group 1"
+date: "2023-03-26"
+output: html_document
+---
+
+
+#### Read in data
+
+```{r}
+DIRECTORYNAME <- "stocks"
+stock.names <- list.files("stocks")
+stock.names
+```
+
+#### Divide each stock into buckets
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(zoo)
+
+one.bucket <- list()
+stock.names <- "stock_0.csv"
+
+for (stock_name in stock.names) {
+  stock.data <- read.csv(paste(DIRECTORYNAME, "/", stock_name, sep=''))
+  buckets <- list()
+  bucket_ids <- unique(stock.data$time_id)
+  for (bucket_id in bucket_ids) {
+    bucket.data <- stock.data[stock.data$time_id == bucket_id, ]
+    bucket.inter <- bucket.data %>% 
+      complete(seconds_in_bucket = seq(min(seconds_in_bucket), 599, 1)) %>%
+      na.locf()
+   buckets <- append(buckets, bucket.inter)
+   break
+  }
+  one.bucket <- append(one.bucket, buckets)
+  break
+}
+one.bucket <- as.data.frame(one.bucket)
+one.bucket
+```
+
+something about seconds being skipped and just interpolating it copy paste the first value from the missing seconds to the next
+
+#### First analysis
+```{R}
+library(tseries)
+library(ggplot2)
+library(tidyverse)
+library(tsfeatures)
+library(devtools)
+library(class)
+#600 seconds so take 0~480
+linear.regression <- function(bucket) {
+  
+  bucket <- bucket %>% mutate(time_bucket = ceiling((seconds_in_bucket + 1) / 30))
+  
+  bucket <- bucket %>% mutate(
+    WAP = (bid_price1 * ask_size1 + ask_price1 * bid_size1) / (bid_size1 + ask_size1))
+  bucket <- bucket %>% mutate(BidAskSpread = ask_price1 / bid_price1 - 1)
+
+  
+  
+  training.X <- subset(bucket, seconds_in_bucket >= 0 & seconds_in_bucket <= 479)
+  
+  sec <- training.X %>% pull(seconds_in_bucket)
+  price <- training.X %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1 <- data.frame(time = sec[-1], log_return = log_r)
+  time.no.change <- (1:480)[!(1:480 %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]
+  }
+  
+  training.Y <- list()
+  comp_vol <- function(x) {
+    return (sqrt(sum(x ^ 2)))
+  }
+  
+  for (i in 1 : length(log_r1)) {
+    log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time/ 30))
+    training.Y <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+    colnames(training.Y) <- c('time_bucket', 'volatility')
+  }
+
+  testing.X <- subset(bucket, seconds_in_bucket >= 480)
+  
+  sec <- testing.X %>% pull(seconds_in_bucket)
+  price <- testing.X %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1 <- data.frame(time = sec[-1], log_return = log_r)
+  time.no.change <- (481:600)[!(480:600 %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]
+  }
+  
+  testing.Y <- list()
+  comp_vol <- function(x) {
+    return (sqrt(sum(x ^ 2)))
+  }
+  
+  for (i in 1 : length(log_r1)) {
+    log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+    testing.Y <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+    colnames(testing.Y) <- c('time_bucket', 'volatility')
+  }
+
+
+  training.X <- split(training.X, training.X$time_bucket)
+  training.X.real <- c()
+  
+  testing.X <- split(testing.X, testing.X$time_bucket)
+  testing.X.real <- c()
+  
+  for ( x in training.X) {
+    x <- data.frame(x)
+    training.X.real <- append(training.X.real, mean(x$WAP))
+  }
+  
+  for ( x in testing.X) {
+    x <- data.frame(x)
+    testing.X.real <- append(testing.X.real, mean(x$WAP))
+  }
+  
+  
+}
+linear.regression(one.bucket)
+
+
+
+```
+
+
+
+```{r}
+
+library(xts)
+library(quantmod)
+
+# Download some sample intraday price data
+getSymbols("AAPL", from = "2022-01-01", to = "2022-01-31", src = "yahoo")
+
+# Calculate the log returns
+log_returns <- diff(log(Cl(AAPL)))
+
+# Resample the log returns to daily frequency
+daily_log_returns <- to.daily(log_returns)
+
+# Calculate the realized power
+realized_power <- exp(2 * cumsum(daily_log_returns^2))
+
+
+
+linear.regression <- function(bucket) {
+  log_returns <- diff(log(Cl(bucket)))
+}
+
+linear.regression(one.bucket)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(zoo)
+
+for_each_bucket <- function(directory_name, stock_name, FUNC) {
+  stock.data <- read.csv(paste(directory_name, "/", stock_name, sep=''))
+  results <- c()
+  group <- 
+  for (bucket_id in bucket_ids) {
+    bucket.data <- stock.data[stock.data$time_id == bucket_id, ]
+    bucket.inter <- bucket.data %>% 
+    complete(seconds_in_bucket = seq(min(seconds_in_bucket), max(seconds_in_bucket) , 1)) %>%
+    na.locf()
+    results <- append(results, FUNC(bucket.inter))
+  }
+  return(results)
+}
+
+mean_bid_price1 <- function(bucket.data) {
+  return(mean(bucket.data$bid_price1))
+}
+
+mean_WAP <- function(bucket.data) {
+  bucket.data <- bucket.data %>% mutate(
+  WAP = (bid_price1 * ask_size1 + ask_price1 * bid_size1) / (bid_size1 + ask_size1))
+  return(mean(bucket.data$WAP))
+}
+
+mean_volatility <- function(bucket.data) {
+  
+}
+
+results <- for_each_bucket("stocks", stock.names[1], mean_WAP)
+boxplot(results)
+```
+
+```{r}
+Get_random_buckets <- function(directory, stock.names) {
+  random.buckets <- data.frame()
+  selected.time_id <- c()
+  for (name in stock.names){
+    stock.data <- read.csv(paste(directory, "/", name, sep=''))
+    print(paste(directory, "/", name, sep=''))
+    bucket <- c()
+    
+    random.time.id <- sample(stock.data$time_id, 1)
+    while (random.time.id %in% selected.time_id) {
+      random.time.id <- sample(stock.data$time_id, 1)
+    }
+    
+    bucket.data <- stock.data[stock.data$time_id == random.time.id, ]
+    bucket.inter <- bucket.data %>% 
+    complete(seconds_in_bucket = seq(min(seconds_in_bucket), max(seconds_in_bucket) , 1)) %>%
+    na.locf()
+    random.buckets <- rbind(random.buckets, data.frame(bucket.inter))
+  }
+  return (random.buckets)
+}
+
+random.buckets <- Get_random_buckets("stocks", stock.names)
+```
+
+```{r}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

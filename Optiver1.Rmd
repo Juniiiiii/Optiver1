@@ -34,10 +34,21 @@ complete_bucket <- function(bucket) {
 }
 
 one.bucket <- complete_bucket(one.bucket)
-one.bucket
-
 
 ```
+
+```{r}
+calculate_WAP_BidAsk <- function(bucket) {
+  return(bucket %>% mutate(
+    WAP = (bid_price1 * ask_size1 + ask_price1 * bid_size1) / (bid_size1 + ask_size1))
+    %>% mutate(BidAskSpread = ask_price1 / bid_price1 - 1))
+}
+one.bucket <- calculate_WAP_BidAsk(one.bucket)
+one.bucket
+```
+
+
+
 
 something about seconds being skipped and just interpolating it copy paste the first value from the missing seconds to the next
 

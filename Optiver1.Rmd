@@ -52,12 +52,39 @@ calculate_log_return <- function(bucket) {
   sec <- bucket %>% pull(seconds_in_bucket)
   price <- bucket %>% pull(WAP)
   log_r <- log(price[-1] / price[1:(length(price) - 1)])
-  log_r <- c(0, log_r)
-  df <- data.frame("seconds_in_bucket" = sec, "log_return" = log_r)
+  df <- data.frame("seconds_in_bucket" = sec[-1], "log_return" = log_r)
   return (df)
 }
-#Returns dataframe with seconds and log_Returns 600 rows
+#Returns a dataframe with seconds in bucket and log_return.
 ```
+
+```{r}
+comp_vol <- function(x) {
+  return(sqrt(sum(x ^ 2)))
+}
+calculate_using_mean_time_bucket <- function(bucket, interval) {
+  log_return_df <- calculate_log_return(bucket)
+  bucket <- bucket %>% mutate(num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  bucket <- bucket %>% mutate(time_bucket = ceiling(seconds_in_bucket/interval))
+  bucket <- bucket[-1,]
+  
+  WAP <- aggregate(WAP ~ time_bucket, data = bucket, FUN = mean)
+  BAS <- aggregate(BidAskSpread ~ time_bucket, data = bucket, FUN = mean)
+  num_order <- aggregate(num_order ~ time_bucket, data = bucket, FUN = mean)
+  
+  log_bucket <- log_return_df %>% mutate(time_bucket = ceiling(seconds_in_bucket/interval))
+  vol <- aggregate(log_return ~ time_bucket, data = log_bucket, FUN = comp_vol)
+  
+  temp1 <- merge(WAP, BAS, by.x = "time_bucket")
+  temp2 <- merge(temp1, num_order, by.x = "time_bucket")
+  temp3 <- merge(temp2, vol, by.x = "time_bucket")
+  return (temp3)
+}
+
+test <- calculate_using_mean_time_bucket(one.bucket, 30)
+test
+```
+
 
 
 something about seconds being skipped and just interpolating it copy paste the first value from the missing seconds to the next

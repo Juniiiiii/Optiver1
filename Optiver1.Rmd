@@ -11,7 +11,6 @@ output: html_document
 ```{r}
 DIRECTORYNAME <- "stocks"
 stock.names <- list.files("stocks")
-stock.names
 ```
 
 #### Divide each stock into buckets
@@ -21,26 +20,23 @@ library(dplyr)
 library(tidyr)
 library(zoo)
 
-one.bucket <- list()
-stock.names <- "stock_0.csv"
+stock.name <- "stock_0.csv"
 
-for (stock_name in stock.names) {
-  stock.data <- read.csv(paste(DIRECTORYNAME, "/", stock_name, sep=''))
-  buckets <- list()
-  bucket_ids <- unique(stock.data$time_id)
-  for (bucket_id in bucket_ids) {
-    bucket.data <- stock.data[stock.data$time_id == bucket_id, ]
-    bucket.inter <- bucket.data %>% 
-      complete(seconds_in_bucket = seq(min(seconds_in_bucket), 599, 1)) %>%
-      na.locf()
-   buckets <- append(buckets, bucket.inter)
-   break
-  }
-  one.bucket <- append(one.bucket, buckets)
-  break
+stock.data <- read.csv(paste(DIRECTORYNAME, "/", stock.name, sep=''))
+
+one.bucket <- stock.data[stock.data$time_id == 5, ]
+
+
+complete_bucket <- function(bucket) {
+  return (bucket %>%
+    complete(seconds_in_bucket = seq(min(seconds_in_bucket), 599, 1)) %>%
+    na.locf())
 }
-one.bucket <- as.data.frame(one.bucket)
+
+one.bucket <- complete_bucket(one.bucket)
 one.bucket
+
+
 ```
 
 something about seconds being skipped and just interpolating it copy paste the first value from the missing seconds to the next

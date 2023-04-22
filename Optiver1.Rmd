@@ -19,6 +19,7 @@ stock.names <- list.files("stocks")
 library(dplyr)
 library(tidyr)
 library(zoo)
+library(e1071)
 
 stock.name <- "stock_0.csv"
 
@@ -80,16 +81,25 @@ calculate_using_mean_time_bucket <- function(bucket, interval) {
   temp3 <- merge(temp2, vol, by.x = "time_bucket")
   return (temp3)
 }
+one.bucket <- calculate_using_mean_time_bucket(one.bucket, 30)
 ```
 
 ```{r}
-regression_model <- function(meaned_df) {
+svm_model <- function(meaned_df) {
   train.X <- meaned_df[1:16, ] %>% select(-c("volatility"))
   train.Y <- meaned_df[1:16, ] %>% select("volatility")
   test.X <- meaned_df[17:20, ] %>% select(-c("volatility"))
   test.Y <- meaned_df[17:20, ] %>% select("volatility")
   
+  svm_res <- e1071::svm(x = train.X, y = train.Y)
+  fit <- predict(svm_res, test.X)
+  test.Y <- as.list(test.Y)
+  mean_predict <- mean(fit)
+  mean_test.Y <- mean(unlist(test.Y))
+  print(mean_predict/mean_test.Y)
+  
 }
+svm_model(one.bucket)
 ```
 
 ```{r}

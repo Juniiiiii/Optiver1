@@ -7,47 +7,60 @@ output: html_document
 
 
 #### Read in data
-
+Make sure all the csv data is in a directory named 'stocks'
 ```{r}
-DIRECTORYNAME <- "stocks"
-stock.names <- list.files("stocks")
+#DIRECTORYNAME <- "stocks"
+#stock.names <- list.files("stocks")
+#stock.data <- list()
+#for (i in 1:length(stock.names)) {
+#  path <- paste(DIRECTORYNAME, stock.names[i], sep='/')
+#  print(path)
+#  stock.data[[i]] <- read.csv(path)
+#}
 ```
-
-#### Divide each stock into buckets
 
 ```{r}
 library(dplyr)
-library(Metrics)
 library(tidyr)
 library(zoo)
 library(e1071)
+library(rugarch)
+```
 
-stock.name <- "stock_0.csv"
 
-stock.data <- read.csv(paste(DIRECTORYNAME, "/", stock.name, sep=''))
+```{r}
+maximum_bid_price <- c()
+for (i in seq_along(stock.data)) {
+  maximum_bid_price <- append(maximum_bid_price, max(stock.data[[i]]$bid_price1))
+}
 
-one.bucket <- stock.data[stock.data$time_id == 5, ]
+boxplot(maximum_bid_price, main = "Maximum bid_price1", ylab="dollars?", xlab="All stocks")
 
+```
+
+###Test Bucket dont worry about this one, use complete_bucket function on every bucket
+```{r}
+test.bucket <- stock.data[[1]][stock.data[[1]]$time_id == 5, ]
 
 complete_bucket <- function(bucket) {
   return (bucket %>%
     complete(seconds_in_bucket = seq(min(seconds_in_bucket), 599, 1)) %>%
     na.locf())
 }
-
-one.bucket <- complete_bucket(one.bucket)
-
 ```
 
+####Function:
+Takes in a bucket and returns the same bucket but with two additional columns: WAP and BAS
 ```{r}
 calculate_WAP_BidAsk <- function(bucket) {
   return(bucket %>% mutate(
     WAP = (bid_price1 * ask_size1 + ask_price1 * bid_size1) / (bid_size1 + ask_size1))
     %>% mutate(BidAskSpread = ask_price1 / bid_price1 - 1))
 }
-one.bucket <- calculate_WAP_BidAsk(one.bucket)
 ```
 
+####Function:
+Takes in a bucket and returns a list with two columns: seconds_in_bucket and the corresponding log_return for that time
 ``` {r}
 calculate_log_return <- function(bucket) {
   sec <- bucket %>% pull(seconds_in_bucket)
@@ -59,11 +72,20 @@ calculate_log_return <- function(bucket) {
 #Returns a dataframe with seconds in bucket and log_return.
 ```
 
+####Function:
+Takes in a bucket and a time interval to divide the bucket into (default interval=30)
+It will spit out a new dataframe with the following columns:
+- time_bucket -> what interval (0~30 or 30~60 etc.)
+- BAS -> the average BAS for that interval
+- WAP -> the average WAP for that interval
+- num_order -> the average num_order for that interval
+- volatility -> the average volatility for that interval
 ```{r}
 comp_vol <- function(x) {
   return(sqrt(sum(x ^ 2)))
 }
-calculate_using_mean_time_bucket <- function(bucket, interval) {
+calculate_using_mean_time_bucket <- function(bucket, interval=30) {
+  bucket <- calculate_WAP_BidAsk(bucket)
   log_return_df <- calculate_log_return(bucket)
   bucket <- bucket %>% mutate(num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
   bucket <- bucket %>% mutate(time_bucket = ceiling(seconds_in_bucket/interval))
@@ -81,20 +103,265 @@ calculate_using_mean_time_bucket <- function(bucket, interval) {
   temp3 <- merge(temp2, vol, by.x = "time_bucket")
   return (temp3)
 }
-one.bucket <- calculate_using_mean_time_bucket(one.bucket, 30)
 ```
 
+
+
+
+
+####Given a dataframe with predicted column and actual column of volatilities, return the accuracy based on MSE
 ```{r}
-MSE <- function(predicted, actual) {
+MSE <- function(results) {
+  predicted <- results$predicted
+  actual <- results$actual
   return (mean((predicted - actual) ^ 2))
 }
+```
 
-QLIKE <- function(predictied, actual) {
-  return (mean(2 * (actual * log(actual/predictied) - (actual - predictied))))
+####Given a dataframe with predicted column and actual column of volatilities, return the accuracy based on QLIKE
+```{r}
+QLIKE <- function(results) {
+  predicted <- results$predicted
+  actual <- results$actual
+  return (mean(2 * (actual * log(actual/predicted) - (actual - predicted))))
+}
+```
+
+####Given a dataframe with predicted column and actual column of volatilities, return the accuracy based on MAE
+```{r}
+MAE <- function(results) {
+  predicted <- results$predicted
+  actual <- results$actual
+  return (mae(predicted, actual))
 }
 ```
 
 
+
+
+#Given a bucket, as in the one with all the mean values, perform linear regression prediction.
+```{r}
+regression_model <- function(bucket) {
+  bucket <- complete_bucket(bucket)
+  meaned_df <- calculate_using_mean_time_bucket(bucket)
+  predicted <- c()
+  
+  train <- meaned_df[1:16, ] %>% select(c("time_bucket"))
+  test <- meaned_df[17, ]
+  model <- lm(volatility ~ time_bucket, data = meaned_df)
+  predicted_val <- predict(model, newdata = test)
+  predicted <- append(predicted, predicted_val)
+  
+  train <- meaned_df[2:17, ] %>% select(c("time_bucket"))
+  test <- meaned_df[17, ]
+  model <- lm(volatility ~ time_bucket, data = meaned_df)
+  predicted_val <- predict(model, newdata = test)
+  predicted <- append(predicted, predicted_val)
+  
+  train <- meaned_df[3:18, ] %>% select(c("time_bucket"))
+  test <- meaned_df[19, ]
+  model <- lm(volatility ~ time_bucket, data = meaned_df)
+  predicted_val <- predict(model, newdata = test)
+  predicted <- append(predicted, predicted_val)
+  
+  train <- meaned_df[4:19, ] %>% select(c("time_bucket"))
+  test <- meaned_df[20, ]
+  model <- lm(volatility ~ time_bucket, data = meaned_df)
+  predicted_val <- predict(model, newdata = test)
+  predicted <- append(predicted, predicted_val)
+
+  result <- data.frame(x = predicted, y = meaned_df[17:20, ] %>% select("volatility"))
+  colnames(result) <- c('predicted', 'actual')
+  return (result)
+}
+```
+
+####Given a time series bucket, perform ARMA_GARCH prediction.
+```{r}
+ARMA_GARCH_model <- function(bucket) {
+  bucket <- complete_bucket(bucket)
+  bucket <- calculate_WAP_BidAsk(bucket)
+  spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)), 
+                   mean.model = list(armaOrder = c(1, 1)), 
+                   distribution.model = "norm")
+  log_return <- calculate_log_return(bucket)
+  
+  predicted <- c()
+  
+  
+  ARM <- ugarchfit(spec = spec, data = log_return %>% filter(seconds_in_bucket <= 480) %>% pull(log_return), solver = 'hybrid')
+  setfixed(spec) <- as.list(coef(ARM))
+  future.path <- fitted(ugarchpath(spec, n.sim = 30, m.sim = 1000))
+  future.path[is.na(future.path)] <- 0
+  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
+
+  ARM <- ugarchfit(spec = spec, data = log_return %>% filter((seconds_in_bucket > 30) & (seconds_in_bucket <= 510)) %>% pull(log_return), solver = 'hybrid')
+  setfixed(spec) <- as.list(coef(ARM))
+  future.path <- fitted(ugarchpath(spec, n.sim = 30, m.sim = 1000))
+  future.path[is.na(future.path)] <- 0
+  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
+  
+  ARM <- ugarchfit(spec = spec, data = log_return %>% filter((seconds_in_bucket > 60) & (seconds_in_bucket <= 540)) %>% pull(log_return), solver = 'hybrid')
+  setfixed(spec) <- as.list(coef(ARM))
+  future.path <- fitted(ugarchpath(spec, n.sim = 30, m.sim = 1000))
+  future.path[is.na(future.path)] <- 0
+  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
+  
+  ARM <- ugarchfit(spec = spec, data = log_return %>% filter((seconds_in_bucket > 90) & (seconds_in_bucket <= 570)) %>% pull(log_return), solver = 'hybrid')
+  setfixed(spec) <- as.list(coef(ARM))
+  future.path <- fitted(ugarchpath(spec, n.sim = 30, m.sim = 1000))
+  future.path[is.na(future.path)] <- 0
+  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
+  
+  df <- data.frame("predicted" = predicted, "actual" = calculate_using_mean_time_bucket(bucket, 30)[17:20, "volatility"])
+  colnames(df) <- c("predicted", "actual")
+  return(df)
+}
+```
+
+
+```{r}
+time_id <- 5
+bucket_five <- list()
+
+for (i in seq_along(stock.data)) {
+  bucket_five[[i]] <- stock.data[[i]][which(stock.data[[i]]$time_id == 5),]
+}
+```
+
+
+```{r}
+
+MSE_five <- c()
+for (i in seq_along(bucket_five)) {
+  result <- regression_model(bucket_five[[i]])
+  MSE_five <- append(MSE_five, MSE(result))
+}
+
+boxplot(MSE_five)
+```
+
+```{r, warning=FALSE}
+
+arm_five <- c()
+for (i in seq_along(bucket_five)) {
+  result <- ARMA_GARCH_model(bucket_five[[i]])
+  arm_five <- append(arm_five, MSE(result))
+}
+
+```
+
+
+```{r}
+filtered <- c()
+for (i in seq_along(arm_five)) {
+  if (arm_five[i] < 0.004) {
+    filtered <- append(filtered, arm_five[i])
+  }
+}
+boxplot(filtered, MSE_five)
+```
+
+
+```{r}
+
+calculate_mean_volatility <- function(bucket) {
+  bucket <- complete(bucket)
+  return(mean(calculate_using_mean_time_bucket(bucket)$volatility * 100))
+}
+
+time_ids <- sample(unique(stock.data[[1]]$time_id), 10)
+
+time_ids
+vol <- c()
+for (i in seq_along(stock.data)) {
+  stock <- stock.data[[i]]
+  
+  for (id in time_ids) {
+    bucket <- stock[stock$time_id == id, ]
+    vol <- append(vol, calculate_mean_volatility(bucket))
+  }
+  
+}
+```
+
+
+```{r}
+df <- cut(vol, breaks=10)
+df
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+####Not decided yet
 ```{r}
 svm_model <- function(meaned_df) {
   
@@ -138,334 +405,9 @@ svm_model <- function(meaned_df) {
   return (result)
 }
 result <- svm_model(one.bucket)
-MSE(result$predicted_volatility, result$actual_volatility)
-QLIKE(result$predicted_volatility, result$actual_volatility)
-mae(result$actual_volatility, result$predicted_volatility)
+MSE(result)
+QLIKE(result)
+#mae(result$actual_volatility, result$predicted_volatility)
 ```
-
-```{r}
-regression_model <- function(meaned_df) {
-  predicted <- c()
-  
-  train <- meaned_df[1:16, ] %>% select(c("time_bucket"))
-  test <- meaned_df[17, ]
-  model <- lm(volatility ~ time_bucket, data = meaned_df)
-  predicted_val <- predict(model, newdata = test)
-  predicted <- append(predicted, predicted_val)
-  
-  train <- meaned_df[2:17, ] %>% select(c("time_bucket"))
-  test <- meaned_df[17, ]
-  model <- lm(volatility ~ time_bucket, data = meaned_df)
-  predicted_val <- predict(model, newdata = test)
-  predicted <- append(predicted, predicted_val)
-  
-  train <- meaned_df[3:18, ] %>% select(c("time_bucket"))
-  test <- meaned_df[19, ]
-  model <- lm(volatility ~ time_bucket, data = meaned_df)
-  predicted_val <- predict(model, newdata = test)
-  predicted <- append(predicted, predicted_val)
-  
-  train <- meaned_df[4:19, ] %>% select(c("time_bucket"))
-  test <- meaned_df[20, ]
-  model <- lm(volatility ~ time_bucket, data = meaned_df)
-  predicted_val <- predict(model, newdata = test)
-  predicted <- append(predicted, predicted_val)
-
-  result <- data.frame(x = predicted, y = meaned_df[17:20, ] %>% select("volatility"))
-  colnames(result) <- c('predicted_volatility', 'actual_volatility')
-  return (result)
-}
-result <- regression_model(one.bucket)
-result
-MSE(result$predicted_volatility, result$actual_volatility)
-QLIKE(result$predicted_volatility, result$actual_volatility)
-mae(result$actual_volatility, result$predicted_volatility)
-```
-
-
-
-```{r}
-library(rugarch)
-ARMA_GARCH_model <- function(bucket) {
-  spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)), 
-                   mean.model = list(armaOrder = c(1, 1)), 
-                   distribution.model = "norm")
-  log_return <- calculate_log_return(bucket)
-  ARM <- ugarchfit(spec = spec, data = log_return %>% filter(seconds_in_bucket <= 480) %>% pull(log_return), solver = 'hybrid')
-  setfixed(spec) <- as.list(coef(ARM))
-  
-  predicted <- c()
-  
-  
-  future.path <- fitted(ugarchpath(spec, n.sim = 30, m.sim = 1000))
-  future.path[is.na(future.path)] <- 0
-  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
-  
-  future.path <- fitted(ugarchpath(spec, n.sim = 60, m.sim = 1000))
-  future.path[is.na(future.path)] <- 0
-  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
-  
-  future.path <- fitted(ugarchpath(spec, n.sim = 90, m.sim = 1000))
-  future.path[is.na(future.path)] <- 0
-  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
-  
-  future.path <- fitted(ugarchpath(spec, n.sim = 120, m.sim = 1000))
-  future.path[is.na(future.path)] <- 0
-  predicted <- append(predicted, mean(sqrt(colSums(future.path ^ 2))))
-  
-  mean_predict <- mean(predicted)
-  mean_test.Y <- mean(calculate_using_mean_time_bucket(bucket, 30)[17:20, "volatility"])
-  print(mean_predict/mean_test.Y)
-}
-ARMA_GARCH_model(one.bucket)
-```
-
-
-
-
-
-
-something about seconds being skipped and just interpolating it copy paste the first value from the missing seconds to the next
-
-#### First analysis
-```{R}
-library(tseries)
-library(ggplot2)
-library(tidyverse)
-library(tsfeatures)
-library(devtools)
-library(class)
-#600 seconds so take 0~480
-linear.regression <- function(bucket) {
-  
-  bucket <- bucket %>% mutate(time_bucket = ceiling((seconds_in_bucket + 1) / 30))
-  
-  bucket <- bucket %>% mutate(
-    WAP = (bid_price1 * ask_size1 + ask_price1 * bid_size1) / (bid_size1 + ask_size1))
-  bucket <- bucket %>% mutate(BidAskSpread = ask_price1 / bid_price1 - 1)
-
-  
-  
-  training.X <- subset(bucket, seconds_in_bucket >= 0 & seconds_in_bucket <= 479)
-  
-  sec <- training.X %>% pull(seconds_in_bucket)
-  price <- training.X %>% pull(WAP)
-  log_r <- log(price[-1] / price[1:(length(price) - 1)])
-  log_r1 <- data.frame(time = sec[-1], log_return = log_r)
-  time.no.change <- (1:480)[!(1:480 %in% log_r1$time)]
-  if (length(time.no.change) > 0) {
-    new.df <- data.frame(time = time.no.change, log_return = 0)
-    log_r1 <- rbind(log_r1, new.df)
-    log_r1 <- log_r1[order(log_r1$time), ]
-  }
-  
-  training.Y <- list()
-  comp_vol <- function(x) {
-    return (sqrt(sum(x ^ 2)))
-  }
-  
-  for (i in 1 : length(log_r1)) {
-    log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time/ 30))
-    training.Y <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
-    colnames(training.Y) <- c('time_bucket', 'volatility')
-  }
-
-  testing.X <- subset(bucket, seconds_in_bucket >= 480)
-  
-  sec <- testing.X %>% pull(seconds_in_bucket)
-  price <- testing.X %>% pull(WAP)
-  log_r <- log(price[-1] / price[1:(length(price) - 1)])
-  log_r1 <- data.frame(time = sec[-1], log_return = log_r)
-  time.no.change <- (481:600)[!(480:600 %in% log_r1$time)]
-  if (length(time.no.change) > 0) {
-    new.df <- data.frame(time = time.no.change, log_return = 0)
-    log_r1 <- rbind(log_r1, new.df)
-    log_r1 <- log_r1[order(log_r1$time), ]
-  }
-  
-  testing.Y <- list()
-  comp_vol <- function(x) {
-    return (sqrt(sum(x ^ 2)))
-  }
-  
-  for (i in 1 : length(log_r1)) {
-    log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
-    testing.Y <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
-    colnames(testing.Y) <- c('time_bucket', 'volatility')
-  }
-
-
-  training.X <- split(training.X, training.X$time_bucket)
-  training.X.real <- c()
-  
-  testing.X <- split(testing.X, testing.X$time_bucket)
-  testing.X.real <- c()
-  
-  for ( x in training.X) {
-    x <- data.frame(x)
-    training.X.real <- append(training.X.real, mean(x$WAP))
-  }
-  
-  for ( x in testing.X) {
-    x <- data.frame(x)
-    testing.X.real <- append(testing.X.real, mean(x$WAP))
-  }
-  
-  
-}
-linear.regression(one.bucket)
-
-
-
-```
-
-
-
-```{r}
-
-library(xts)
-library(quantmod)
-
-# Download some sample intraday price data
-getSymbols("AAPL", from = "2022-01-01", to = "2022-01-31", src = "yahoo")
-
-# Calculate the log returns
-log_returns <- diff(log(Cl(AAPL)))
-
-# Resample the log returns to daily frequency
-daily_log_returns <- to.daily(log_returns)
-
-# Calculate the realized power
-realized_power <- exp(2 * cumsum(daily_log_returns^2))
-
-
-
-linear.regression <- function(bucket) {
-  log_returns <- diff(log(Cl(bucket)))
-}
-
-linear.regression(one.bucket)
-
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-```{r}
-library(dplyr)
-library(tidyr)
-library(zoo)
-
-for_each_bucket <- function(directory_name, stock_name, FUNC) {
-  stock.data <- read.csv(paste(directory_name, "/", stock_name, sep=''))
-  results <- c()
-  group <- 
-  for (bucket_id in bucket_ids) {
-    bucket.data <- stock.data[stock.data$time_id == bucket_id, ]
-    bucket.inter <- bucket.data %>% 
-    complete(seconds_in_bucket = seq(min(seconds_in_bucket), max(seconds_in_bucket) , 1)) %>%
-    na.locf()
-    results <- append(results, FUNC(bucket.inter))
-  }
-  return(results)
-}
-
-mean_bid_price1 <- function(bucket.data) {
-  return(mean(bucket.data$bid_price1))
-}
-
-mean_WAP <- function(bucket.data) {
-  bucket.data <- bucket.data %>% mutate(
-  WAP = (bid_price1 * ask_size1 + ask_price1 * bid_size1) / (bid_size1 + ask_size1))
-  return(mean(bucket.data$WAP))
-}
-
-mean_volatility <- function(bucket.data) {
-  
-}
-
-results <- for_each_bucket("stocks", stock.names[1], mean_WAP)
-boxplot(results)
-```
-
-```{r}
-Get_random_buckets <- function(directory, stock.names) {
-  random.buckets <- data.frame()
-  selected.time_id <- c()
-  for (name in stock.names){
-    stock.data <- read.csv(paste(directory, "/", name, sep=''))
-    print(paste(directory, "/", name, sep=''))
-    bucket <- c()
-    
-    random.time.id <- sample(stock.data$time_id, 1)
-    while (random.time.id %in% selected.time_id) {
-      random.time.id <- sample(stock.data$time_id, 1)
-    }
-    
-    bucket.data <- stock.data[stock.data$time_id == random.time.id, ]
-    bucket.inter <- bucket.data %>% 
-    complete(seconds_in_bucket = seq(min(seconds_in_bucket), max(seconds_in_bucket) , 1)) %>%
-    na.locf()
-    random.buckets <- rbind(random.buckets, data.frame(bucket.inter))
-  }
-  return (random.buckets)
-}
-
-random.buckets <- Get_random_buckets("stocks", stock.names)
-```
-
-```{r}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

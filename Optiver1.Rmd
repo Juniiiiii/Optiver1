@@ -8,15 +8,15 @@ output: html_document
 
 #### Read in data
 Make sure all the csv data is in a directory named 'stocks'
-```{r}
-#DIRECTORYNAME <- "stocks"
-#stock.names <- list.files("stocks")
-#stock.data <- list()
-#for (i in 1:length(stock.names)) {
-#  path <- paste(DIRECTORYNAME, stock.names[i], sep='/')
-#  print(path)
-#  stock.data[[i]] <- read.csv(path)
-#}
+```{r, eval=FALSE}
+DIRECTORYNAME <- "stocks"
+stock.names <- list.files("stocks")
+stock.data <- list()
+for (i in 1:length(stock.names)) {
+  path <- paste(DIRECTORYNAME, stock.names[i], sep='/')
+  print(path)
+  stock.data[[i]] <- read.csv(path)
+}
 ```
 
 ```{r}
@@ -34,9 +34,29 @@ for (i in seq_along(stock.data)) {
   maximum_bid_price <- append(maximum_bid_price, max(stock.data[[i]]$bid_price1))
 }
 
-boxplot(maximum_bid_price, main = "Maximum bid_price1", ylab="dollars?", xlab="All stocks")
+boxplot(maximum_bid_price, main = "Maximum bid_price1", ylab="dollars", xlab="All stocks")
+```
+
+```{r}
+maximum_ask_price <- c()
+for (i in seq_along(stock.data)) {
+  maximum_ask_price <- append(maximum_ask_price, max(stock.data[[i]]$ask_price1))
+}
+
+boxplot(maximum_ask_price, main = "Maximum ask_price1", ylab="dollars", xlab="All stocks")
+```
+Apparently they all have 3830 buckets each
+```{r}
+number_of_buckets <- c()
+for (i in seq_along(stock.data)) {
+  number_of_buckets <- append(number_of_buckets, length(unique(stock.data[[i]]$time_id)))
+}
+
+boxplot(number_of_buckets, main = "Number of buckets in each stock", ylab="bucket count", xlab="All stocks")
 
 ```
+
+
 
 ###Test Bucket dont worry about this one, use complete_bucket function on every bucket
 ```{r}
@@ -221,95 +241,63 @@ ARMA_GARCH_model <- function(bucket) {
 
 
 ```{r}
-time_id <- 5
-bucket_five <- list()
-
-for (i in seq_along(stock.data)) {
-  bucket_five[[i]] <- stock.data[[i]][which(stock.data[[i]]$time_id == 5),]
-}
-```
-
-
-```{r}
-
-MSE_five <- c()
-for (i in seq_along(bucket_five)) {
-  result <- regression_model(bucket_five[[i]])
-  MSE_five <- append(MSE_five, MSE(result))
-}
-
-boxplot(MSE_five)
-```
-
-```{r, warning=FALSE}
-
-arm_five <- c()
-for (i in seq_along(bucket_five)) {
-  result <- ARMA_GARCH_model(bucket_five[[i]])
-  arm_five <- append(arm_five, MSE(result))
-}
-
-```
-
-
-```{r}
-filtered <- c()
-for (i in seq_along(arm_five)) {
-  if (arm_five[i] < 0.004) {
-    filtered <- append(filtered, arm_five[i])
-  }
-}
-boxplot(filtered, MSE_five)
-```
-
-
-```{r}
-
 calculate_mean_volatility <- function(bucket) {
-  bucket <- complete(bucket)
-  return(mean(calculate_using_mean_time_bucket(bucket)$volatility * 100))
+  return(mean(calculate_using_mean_time_bucket(complete(bucket))$volatility * 100))
 }
+```
 
-time_ids <- sample(unique(stock.data[[1]]$time_id), 10)
+
+```{r}
+time_ids <- sample(unique(stock.data[[1]]$time_id), 1)
 
 time_ids
-vol <- c()
+```
+
+```{r}
+sampled.buckets <- c()
+j <- 1
 for (i in seq_along(stock.data)) {
   stock <- stock.data[[i]]
   
   for (id in time_ids) {
     bucket <- stock[stock$time_id == id, ]
-    vol <- append(vol, calculate_mean_volatility(bucket))
+    sampled.buckets[[j]] <- bucket
+    j <- j + 1
   }
-  
 }
 ```
 
 
+```{r, warning=FALSE}
+y <- lapply(sampled.buckets, FUN=regression_model)
+y.regression.acc <- lapply(y, FUN=MSE)
+
+x <- lapply(sampled.buckets, FUN=calculate_mean_volatility)
+
+y <- lapply(sampled.buckets, FUN=ARMA_GARCH_model)
+y.arm.acc <- lapply(y, FUN=MSE)
+```
+
 ```{r}
-df <- cut(vol, breaks=10)
-df
+dev.new(width = 700, height = 330, unit = "px")
+plot(x = x, y = y.regression.acc, col="red", ylim=c(0, 0.000002), xlab="Volatility", ylab="Accuracy in MSE (Lower is better)", main="Regression vs ARMA_GARCH", las=1, cex.lab=1, mgp=c(3,1,0))
+
+abline(lm(unlist(y.regression.acc) ~ unlist(x)), col="red")
+
+points(x = x, y = y.arm.acc, col="blue")
+abline(lm(unlist(y.arm.acc) ~ unlist(x)), col="blue")
+
+legend("topright", legend=c("Regression", "ARMA_GARCH"),
+       col=c("red", "blue"), lty=1:2, cex=0.8)
 ```
 
 
 
 
+```{r}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+sampled.buckets[[1]]
+```
 
 
 

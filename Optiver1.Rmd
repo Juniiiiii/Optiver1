@@ -8,7 +8,7 @@ output: html_document
 
 #### Read in data
 Make sure all the csv data is in a directory named 'stocks'
-```{r, eval=FALSE}
+```{r}
 DIRECTORYNAME <- "stocks"
 stock.names <- list.files("stocks")
 stock.data <- list()
@@ -19,15 +19,20 @@ for (i in 1:length(stock.names)) {
 }
 ```
 
+####Additional libraries
 ```{r}
 library(dplyr)
 library(tidyr)
 library(zoo)
 library(e1071)
 library(rugarch)
+library(ggplot2)
+library(randomForest)
+library(Metrics)
+library(reshape2)
 ```
 
-
+####Exploratory analysis (idc)
 ```{r}
 maximum_bid_price <- c()
 for (i in seq_along(stock.data)) {
@@ -58,7 +63,7 @@ boxplot(number_of_buckets, main = "Number of buckets in each stock", ylab="bucke
 
 
 
-###Test Bucket dont worry about this one, use complete_bucket function on every bucket
+###Use complete_bucket function to make sure that the buckets have all the seconds included. Like it doesn't skip any seconds and goes from 1:599.
 ```{r}
 test.bucket <- stock.data[[1]][stock.data[[1]]$time_id == 5, ]
 
@@ -80,7 +85,7 @@ calculate_WAP_BidAsk <- function(bucket) {
 ```
 
 ####Function:
-Takes in a bucket and returns a list with two columns: seconds_in_bucket and the corresponding log_return for that time
+Takes in a bucket and returns a dataframe with two columns: seconds_in_bucket and the corresponding log_return for that time
 ``` {r}
 calculate_log_return <- function(bucket) {
   sec <- bucket %>% pull(seconds_in_bucket)
@@ -104,12 +109,30 @@ It will spit out a new dataframe with the following columns:
 comp_vol <- function(x) {
   return(sqrt(sum(x ^ 2)))
 }
+classify_trend <- function(x) {
+  if (x > 0) { # up
+    return(1)
+  } else if (x == 0) { # same
+    return(0)
+  } else { # down
+    return (-1)
+  }
+}
+intervals <- c(1, 31, 61, 91, 121, 151, 181, 211, 241, 271, 301, 331, 361, 391, 421, 451, 481, 511, 541, 571, 600)
 calculate_using_mean_time_bucket <- function(bucket, interval=30) {
+  bucket <- complete_bucket(bucket)
+  change <- c()
+  for (i in 1:(length(intervals) - 1)) {
+    c <- bucket[intervals[i + 1], ]$bid_price1 - bucket[intervals[i], ]$bid_price1
+    change <- append(change, classify_trend(c))
+  }
+  
   bucket <- calculate_WAP_BidAsk(bucket)
   log_return_df <- calculate_log_return(bucket)
   bucket <- bucket %>% mutate(num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
   bucket <- bucket %>% mutate(time_bucket = ceiling(seconds_in_bucket/interval))
   bucket <- bucket[-1,]
+  
   
   WAP <- aggregate(WAP ~ time_bucket, data = bucket, FUN = mean)
   BAS <- aggregate(BidAskSpread ~ time_bucket, data = bucket, FUN = mean)
@@ -118,6 +141,7 @@ calculate_using_mean_time_bucket <- function(bucket, interval=30) {
   log_bucket <- log_return_df %>% mutate(time_bucket = ceiling(seconds_in_bucket/interval))
   vol <- aggregate(log_return ~ time_bucket, data = log_bucket, FUN = comp_vol)
   colnames(vol) <- c("time_bucket", "volatility")
+  vol$trend <- change
   temp1 <- merge(WAP, BAS, by.x = "time_bucket")
   temp2 <- merge(temp1, num_order, by.x = "time_bucket")
   temp3 <- merge(temp2, vol, by.x = "time_bucket")
@@ -129,12 +153,18 @@ calculate_using_mean_time_bucket <- function(bucket, interval=30) {
 
 
 
-####Given a dataframe with predicted column and actual column of volatilities, return the accuracy based on MSE
+####Given a dataframe with predicted column and actual column of volatilities, return the accuracy based on MSE or RMSE
 ```{r}
 MSE <- function(results) {
   predicted <- results$predicted
   actual <- results$actual
   return (mean((predicted - actual) ^ 2))
+}
+
+RMSE <- function(results) {
+  predicted <- results$predicted
+  actual <- results$actual
+  return (sqrt(mean((actual - predicted) ^ 2)))
 }
 ```
 
@@ -152,16 +182,98 @@ QLIKE <- function(results) {
 MAE <- function(results) {
   predicted <- results$predicted
   actual <- results$actual
-  return (mae(predicted, actual))
+  return (mae(actual, predicted))
 }
 ```
 
-
-
-
-#Given a bucket, as in the one with all the mean values, perform linear regression prediction.
+#Given a bucket, perform Random Forest prediction.
 ```{r}
-regression_model <- function(bucket) {
+RandomForest_model_vol <- function(bucket) {
+  bucket <- complete_bucket(bucket)
+  meaned_df <- calculate_using_mean_time_bucket(bucket)
+  predicted <- c()
+  
+  train <- meaned_df[1:16, ]
+  test <- meaned_df[17, ]
+  rf_res <- randomForest::randomForest(volatility ~ time_bucket, data = train)
+  fit <- predict(rf_res, newdata = test)
+  predicted <- append(predicted, fit)
+  
+  train <- meaned_df[2:17, ]
+  test <- meaned_df[18, ]
+  rf_res <- randomForest::randomForest(volatility ~ time_bucket, data = train)
+  fit <- predict(rf_res, newdata = test)
+  predicted <- append(predicted, fit)
+  
+  train <- meaned_df[3:18, ]
+  test <- meaned_df[19, ]
+  rf_res <- randomForest::randomForest(volatility ~ time_bucket, data = train)
+  fit <- predict(rf_res, newdata = test)
+  predicted <- append(predicted, fit)
+  
+  train <- meaned_df[4:19, ]
+  test <- meaned_df[20, ]
+  rf_res <- randomForest::randomForest(volatility ~ time_bucket, data = train)
+  fit <- predict(rf_res, newdata = test)
+  predicted <- append(predicted, fit)
+  
+  result <- data.frame(x = predicted, y = meaned_df[17:20, ] %>% select("volatility"))
+  colnames(result) <- c('predicted_volatility', 'actual_volatility')
+  return (result)
+}
+```
+
+#Given a bucket, perform svr prediction.
+```{r}
+svm_model_vol <- function(bucket) {
+  bucket <- complete_bucket(bucket)
+  meaned_df <- calculate_using_mean_time_bucket(bucket)
+  
+  predicted <- c()
+  
+  train.X <- meaned_df[1:16, ] %>% select(c("time_bucket"))
+  train.Y <- meaned_df[1:16, ] %>% select("volatility")
+  test.X <- meaned_df[17, ] %>% select(c("time_bucket"))
+  test.Y <- meaned_df[17, ] %>% select("volatility")
+  svm_res <- e1071::svm(x = train.X, y = train.Y)
+  fit <- predict(svm_res, test.X)
+  predicted <- append(predicted, fit)
+  
+  train.X <- meaned_df[2:17, ] %>% select(c("time_bucket"))
+  train.Y <- meaned_df[2:17, ] %>% select("volatility")
+  test.X <- meaned_df[18, ] %>% select(c("time_bucket"))
+  test.Y <- meaned_df[18, ] %>% select("volatility")
+  svm_res <- e1071::svm(x = train.X, y = train.Y)
+  fit <- predict(svm_res, test.X)
+  test.Y <- as.list(test.Y)
+  predicted <- append(predicted, fit)
+  
+  train.X <- meaned_df[3:18, ] %>% select(c("time_bucket"))
+  train.Y <- meaned_df[3:18, ] %>% select("volatility")
+  test.X <- meaned_df[19, ] %>% select(c("time_bucket"))
+  test.Y <- meaned_df[19, ] %>% select("volatility")
+  svm_res <- e1071::svm(x = train.X, y = train.Y)
+  fit <- predict(svm_res, test.X)
+  predicted <- append(predicted, fit)
+  
+  train.X <- meaned_df[4:19, ] %>% select(c("time_bucket"))
+  train.Y <- meaned_df[4:19, ] %>% select("volatility")
+  test.X <- meaned_df[20, ] %>% select(c("time_bucket"))
+  test.Y <- meaned_df[20, ] %>% select("volatility")
+  svm_res <- e1071::svm(x = train.X, y = train.Y)
+  fit <- predict(svm_res, test.X)
+  predicted <- append(predicted, fit)
+  
+  result <- data.frame(x = predicted, y = meaned_df[17:20, ] %>% select("volatility"))
+  colnames(result) <- c('predicted', 'actual')
+  return (result)
+}
+
+```
+
+#Given a bucket, perform linear regression prediction.
+```{r}
+regression_model_vol <- function(bucket) {
   bucket <- complete_bucket(bucket)
   meaned_df <- calculate_using_mean_time_bucket(bucket)
   predicted <- c()
@@ -198,7 +310,7 @@ regression_model <- function(bucket) {
 
 ####Given a time series bucket, perform ARMA_GARCH prediction.
 ```{r}
-ARMA_GARCH_model <- function(bucket) {
+ARMA_GARCH_model_vol <- function(bucket) {
   bucket <- complete_bucket(bucket)
   bucket <- calculate_WAP_BidAsk(bucket)
   spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)), 
@@ -239,7 +351,26 @@ ARMA_GARCH_model <- function(bucket) {
 }
 ```
 
+The basic function of the four models is:
+Takes the last 480 seconds to train to predict the volatility for the next 30 seconds.
+It returns a dataframe which is of the type:
 
++-------------+-----------+
+| predicted   |   actual  |
+---------------------------
+| prediction1 |   actual1 |
+---------------------------
+| prediction2 |   actual2 |
+---------------------------
+| prediction3 |   actual3 |
+---------------------------
+| prediction4 |   actual4 |
+---------------------------
+
+Then using accuracy measure we can see how well the model predicted compared to the actual value
+
+
+####This just divides the buckets into 30 second intervals and then takes the mean of all the volatility of each interval
 ```{r}
 calculate_mean_volatility <- function(bucket) {
   return(mean(calculate_using_mean_time_bucket(complete(bucket))$volatility * 100))
@@ -247,56 +378,394 @@ calculate_mean_volatility <- function(bucket) {
 ```
 
 
+###This bins the bucket appropriately depending on its average volatility.
+###It ranges from 0 ~ 0.3 with 10 bins.
 ```{r}
-time_ids <- sample(unique(stock.data[[1]]$time_id), 1)
+calculate_index <- function(v) {
+    if (v < 0.03) {
+      return (2)
+    } else if (v < 0.06) {
+      return (3)
+    } else if (v < 0.09) {
+      return (4)
+    } else if (v < 0.12) {
+      return (5)
+    } else if (v < 0.15) {
+      return (6)
+    } else if (v < 0.18) {
+      return (7)
+    } else if (v < 0.21) {
+      return (8)
+    } else if (v < 0.24) {
+      return (9)
+    } else if (v < 0.27) {
+      return (10)
+    } else if (v < 0.30) {
+      return (11)
+    } else {
+      return (0)
+    }
+}
 
-time_ids
-```
-
-```{r}
-sampled.buckets <- c()
-j <- 1
-for (i in seq_along(stock.data)) {
-  stock <- stock.data[[i]]
-  
-  for (id in time_ids) {
-    bucket <- stock[stock$time_id == id, ]
-    sampled.buckets[[j]] <- bucket
-    j <- j + 1
-  }
+calculate_bin <- function(index) {
+  tags <- c(
+    "[0, 0.03)",
+    "[0.03, 0.06)",
+    "[0.06, 0.09)",
+    "[0.09, 0.12)",
+    "[0.12, 0.15)",
+    "[0.15, 0.18)",
+    "[0.18, 0.21)",
+    "[0.21, 0.24)",
+    "[0.24, 0.27)",
+    "[0.27, 0.30)"
+  )
+  return (tags[index])
 }
 ```
 
+####This randomly selects buckets by picking random time_ids and then calculates the average volatility and bins them appropriately
+It returns a list of buckets where:
+bin_bucket[[1]] contains 5 (buckets_per_bin) buckets where each bucket has an average volatility between 0 and 0.3
+bin_bucket[[2]] contains 5 (buckets_per_bin) buckets where each bucket has an average volatility between 0.3 and 0.6 etc.
+#If there aren't 5 buckets in each bin, return 0. And you need ot try again. So it is kind of a lottery.
+```{r}
+select_random_binned_buckets <- function(time_id_count = 20, buckets_per_bin = 5) {
+  time_ids <- sample(unique(stock.data[[1]]$time_id), time_id_count)
+  sampled.buckets <- c()
+  number.buckets <- c(length = 12)
+  j <- 1
+  for (i in seq_along(stock.data)) {
+    stock <- stock.data[[i]]
+    for (id in time_ids) {
+      bucket <- stock[stock$time_id == id, ]
+      sampled.buckets[[j]] <- bucket
+      j <- j + 1
+    }
+  }
+  selected.buckets <- c()
+  j <- 1
+  for (i in seq_along(sampled.buckets)) {
+    index <- calculate_index(calculate_mean_volatility(sampled.buckets[[i]]))
+    if (index != 0) {
+      if (is.na(number.buckets[index])) {
+        number.buckets[index] <- 0
+        selected.buckets[[index]] <- list()
+      }
+      if (number.buckets[index] < buckets_per_bin) {
+        number.buckets[index] <- number.buckets[index] + 1
+        selected.buckets[[index]][[number.buckets[index]]] <- sampled.buckets[[i]]
+        j <- j + 1
+      }
+    }
+    
+    
+    if (!any(is.na(unlist(number.buckets[2:length(number.buckets)])))) {
+      if (all(unlist(number.buckets[2:length(number.buckets)]) == buckets_per_bin)) {
+        break
+      }
+    }
+  }
+  
+  for (i in 2:length(number.buckets)) {
+    if (number.buckets[[i]] != buckets_per_bin) {
+      print("Unsuccessful")
+      return(0)
+    }
+  }
+
+  binned.buckets <- c()
+  j <- 1
+  for (i in 2:length(selected.buckets)) {
+    binned.buckets[[j]] <- selected.buckets[[i]]
+    j <- j + 1
+  }
+  
+  print("Successfully Selected")
+  
+  return (binned.buckets)
+}
+```
+
+#Analysis of accuracy on each model on a random binned_bucket.
+```{r, warning = FALSE}
+analyse_binned_bucket <- function(binned.buckets, model) {
+  tags <- c()
+  rmse.acc <- c()
+  qlike.acc <- c()
+  mae.acc <- c()
+  
+  for (i in seq_along(binned.buckets)) {
+    y <- lapply(binned.buckets[[i]], FUN=model)
+    rmse <- lapply(y, FUN=RMSE)
+    qlike <- lapply(y, FUN=QLIKE)
+    mae <- lapply(y, FUN=MAE)
+    
+    for (j in 1:length(rmse)) {
+      tags <- append(tags, calculate_bin(i))
+      rmse.acc <- append(rmse.acc, rmse[j])
+      qlike.acc <- append(qlike.acc, qlike[j])
+      mae.acc <- append(mae.acc, mae[j])
+    }
+  }
+  df <- data.frame('Volatility' = tags, 'RMSE' = unlist(rmse.acc), 'QLIKE' = unlist(qlike.acc), 'MAE' = unlist(mae.acc))
+  return (df)
+}
+```
+
+####This repeatedly selects random buckets 30 times and appends the results of the accuracies to a single dataframe.
+If it runs into an error like the bins are not filled to the max with 5 buckets, then it will try selecting again.
+WARNING: 30 Repeats will take between 1 ~ 2 hours depending on your computer
+```{r, warning=FALSE}
+set.seed(3888)
+arm.df <- data.frame(matrix(ncol = 4, nrow = 0))
+colnames(arm.df) <- c("Volatility", "RMSE", "QLIKE", "MAE")
+
+svm.df <- data.frame(matrix(ncol = 4, nrow = 0))
+colnames(svm.df) <- c("Volatility", "RMSE", "QLIKE", "MAE")
+
+reg.df <- data.frame(matrix(ncol = 4, nrow = 0))
+colnames(reg.df) <- c("Volatility", "RMSE", "QLIKE", "MAE")
+
+ran.df <- data.frame(matrix(ncol = 4, nrow = 0))
+colnames(ran.df) <- c("Volatility", "RMSE", "QLIKE", "MAE")
+
+TOTAL_REPEATS <- 30
+
+for (i in 1:TOTAL_REPEATS) {
+  tryCatch( {
+    binned_buckets <- select_random_binned_buckets()
+    if (!is.numeric(binned_buckets)) {
+      arm.df <- rbind(arm.df, analyse_binned_bucket(binned_buckets, ARMA_GARCH_model_vol))
+      print(paste("arm", i))
+      svm.df <- rbind(svm.df, analyse_binned_bucket(binned_buckets, svm_model_vol))
+      print(paste("svm", i))
+      reg.df <- rbind(reg.df, analyse_binned_bucket(binned_buckets, regression_model_vol))
+      print(paste("reg", i))
+      ran.df <- rbind(ran.df, analyse_binned_bucket(binned_buckets, RandomForest_model_vol))
+      print(paste("ran", i))
+    } else {
+      i <- i - 1
+    }
+  }, error=function(e){
+    print(e)
+    i <- i - 1
+  })
+}
+```
+
+###Sometimes QLIKE returns Inf or NaN values. Remove those rows and only work with the ones with actual numbers in them.
+```{r}
+cleaned.arm.df <- arm.df[complete.cases(arm.df), ]
+cleaned.svm.df <- svm.df[complete.cases(svm.df), ]
+cleaned.reg.df <- reg.df[complete.cases(reg.df), ]
+cleaned.ran.df <- ran.df[complete.cases(ran.df), ]
+
+cleaned.arm.df <- cleaned.arm.df[!is.infinite(cleaned.arm.df$QLIKE), ]
+cleaned.svm.df <- cleaned.svm.df[!is.infinite(cleaned.svm.df$QLIKE), ]
+cleaned.reg.df <- cleaned.reg.df[!is.infinite(cleaned.reg.df$QLIKE), ]
+cleaned.ran.df <- cleaned.ran.df[!is.infinite(cleaned.ran.df$QLIKE), ]
+
+colnames(cleaned.arm.df) <- c("Volatility", "rmse", "qlike", "mae")
+colnames(cleaned.svm.df) <- c("Volatility", "rmse", "qlike", "mae")
+colnames(cleaned.reg.df) <- c("Volatility", "rmse", "qlike", "mae")
+colnames(cleaned.ran.df) <- c("Volatility", "rmse", "qlike", "mae")
+```
+
+#If there are any outliers (since it is random there probably is), remove them by sorting and removing them. 
+#In this case, the top two happened to be the outlier
+```{r}
+cleaned.arm.df <- cleaned.arm.df[order(cleaned.arm.df$rmse, decreasing = TRUE), ]
+cleaned.arm.df <- cleaned.arm.df[-(1:2), ]
+```
+
+
+####Individual boxplots for each bin
+This is for ARMAGARCH
+```{r, warning=FALSE}
+ggplot(data = cleaned.arm.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = rmse)) + 
+      theme_minimal() +
+      ggtitle("RMSE Accuracy using ARMA_GARCH, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
 
 ```{r, warning=FALSE}
-y <- lapply(sampled.buckets, FUN=regression_model)
-y.regression.acc <- lapply(y, FUN=MSE)
+ggplot(data = cleaned.arm.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = qlike)) + 
+      theme_minimal() +
+      ggtitle("QLIKE Accuracy using ARMA_GARCH, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
 
-x <- lapply(sampled.buckets, FUN=calculate_mean_volatility)
-
-y <- lapply(sampled.buckets, FUN=ARMA_GARCH_model)
-y.arm.acc <- lapply(y, FUN=MSE)
 ```
 
-```{r}
-dev.new(width = 700, height = 330, unit = "px")
-plot(x = x, y = y.regression.acc, col="red", ylim=c(0, 0.000002), xlab="Volatility", ylab="Accuracy in MSE (Lower is better)", main="Regression vs ARMA_GARCH", las=1, cex.lab=1, mgp=c(3,1,0))
+```{r, warning=FALSE}
+ggplot(data = cleaned.arm.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = mae)) + 
+      theme_minimal() +
+      ggtitle("MAE Accuracy using ARMA_GARCH, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
 
-abline(lm(unlist(y.regression.acc) ~ unlist(x)), col="red")
-
-points(x = x, y = y.arm.acc, col="blue")
-abline(lm(unlist(y.arm.acc) ~ unlist(x)), col="blue")
-
-legend("topright", legend=c("Regression", "ARMA_GARCH"),
-       col=c("red", "blue"), lty=1:2, cex=0.8)
 ```
 
 
+###This is for Regression
+```{r, warning=FALSE}
+ggplot(data = cleaned.reg.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = rmse)) + 
+      theme_minimal() +
+      ggtitle("RMSE Accuracy using Regression, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
+
+```{r, warning=FALSE}
+ggplot(data = cleaned.reg.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = qlike)) + 
+      theme_minimal() +
+      ggtitle("QLIKE Accuracy using Regression, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
+
+```{r, warning=FALSE}
+ggplot(data = cleaned.reg.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = mae)) + 
+      theme_minimal() +
+      ggtitle("MAE Accuracy using Regression, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
 
 
-```{r}
+#This is for SVM
+```{r, warning=FALSE}
+ggplot(data = cleaned.svm.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = rmse)) + 
+      theme_minimal() +
+      ggtitle("RMSE Accuracy using SVR, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
 
-sampled.buckets[[1]]
+```
+
+```{r, warning=FALSE}
+ggplot(data = cleaned.svm.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = qlike)) + 
+      theme_minimal() +
+      ggtitle("QLIKE Accuracy using SVR, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
+
+```{r, warning=FALSE}
+ggplot(data = cleaned.svm.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = mae)) + 
+      theme_minimal() +
+      ggtitle("MAE Accuracy using SVR, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
+
+
+#This is for Random Forest
+```{r, warning=FALSE}
+ggplot(data = cleaned.svm.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = rmse)) + 
+      theme_minimal() +
+      ggtitle("RMSE Accuracy using Random Forest, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
+
+```{r, warning=FALSE}
+ggplot(data = cleaned.svm.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = qlike)) + 
+      theme_minimal() +
+      ggtitle("QLIKE Accuracy using Random Forest, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
+
+```{r, warning=FALSE}
+ggplot(data = cleaned.svm.df) + 
+      geom_boxplot(mapping = aes(x = Volatility, y = mae)) + 
+      theme_minimal() +
+      ggtitle("MAE Accuracy using Random Forest, buckets/bin = 5, repeat = 30") + 
+      theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
+
+
+
+
+
+
+
+We can then average the results of all 30 repeats and graph it.
+```{R}
+mean.arm.df <- aggregate(rmse ~ Volatility, data = cleaned.arm.df, FUN = mean)
+mean.svm.df <- aggregate(rmse ~ Volatility, data = cleaned.svm.df, FUN = mean)
+mean.reg.df <- aggregate(rmse ~ Volatility, data = cleaned.reg.df, FUN = mean)
+mean.ran.df <- aggregate(rmse ~ Volatility, data = cleaned.ran.df, FUN = mean)
+
+aRMSE = ggplot() +
+  geom_line(data=mean.arm.df, aes(x=Volatility, y = rmse, group = 1, color="red")) + 
+  geom_line(data=mean.svm.df, aes(x=Volatility, y = rmse, group = 1, color="darkgreen")) + 
+  geom_line(data=mean.reg.df, aes(x=Volatility, y = rmse, group = 1, color="blue")) + 
+  geom_line(data=mean.ran.df, aes(x=Volatility, y = rmse, group = 1, color="purple")) + 
+  geom_point() + 
+  theme_minimal() +
+  ggtitle("Average RMSE Accuracy comparison between predictive models, buckets/bin = 5, repeats = 30") + 
+  labs(color="Model") + ylab("Log 2 RMSE") +
+  scale_color_manual(labels = c("ARM", "SVR", "REG", "RAN"), values = c("red", "darkgreen", "blue", "purple")) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title=element_text(size=12, hjust=0.55)) +
+  scale_y_continuous(trans='log2')
+aRMSE
+```
+
+```{R}
+mean.arm.df <- aggregate(qlike ~ Volatility, data = cleaned.arm.df, FUN = mean)
+mean.svm.df <- aggregate(qlike ~ Volatility, data = cleaned.svm.df, FUN = mean)
+mean.reg.df <- aggregate(qlike ~ Volatility, data = cleaned.reg.df, FUN = mean)
+mean.ran.df <- aggregate(qlike ~ Volatility, data = cleaned.ran.df, FUN = mean)
+
+aQLIKE = ggplot() +
+  geom_line(data=mean.arm.df, aes(x=Volatility, y = qlike, group = 1, color="red")) + 
+  geom_line(data=mean.svm.df, aes(x=Volatility, y = qlike, group = 1, color="darkgreen")) + 
+  geom_line(data=mean.reg.df, aes(x=Volatility, y = qlike, group = 1, color="blue")) + 
+  geom_line(data=mean.ran.df, aes(x=Volatility, y = qlike, group = 1, color="purple")) + 
+  geom_point() + 
+  theme_minimal() +
+  ggtitle("Average QLIKE Accuracy comparison between predictive models, buckets/bin = 5, repeats = 30") + 
+  labs(color="Model") + ylab("Log 2 QLIKE") +
+  scale_color_manual(labels = c("ARM", "SVR", "REG", "RAN"), values = c("red", "darkgreen", "blue", "purple")) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title=element_text(size=12, hjust=0.55)) +
+  scale_y_continuous(trans='log2')
+
+aQLIKE
+```
+
+```{R}
+mean.arm.df <- aggregate(mae ~ Volatility, data = cleaned.arm.df, FUN = mean)
+mean.svm.df <- aggregate(mae ~ Volatility, data = cleaned.svm.df, FUN = mean)
+mean.reg.df <- aggregate(mae ~ Volatility, data = cleaned.reg.df, FUN = mean)
+mean.ran.df <- aggregate(mae ~ Volatility, data = cleaned.ran.df, FUN = mean)
+
+aMAE = ggplot() +
+  geom_line(data=mean.arm.df, aes(x=Volatility, y = mae, group = 1, color="red")) + 
+  geom_line(data=mean.svm.df, aes(x=Volatility, y = mae, group = 1, color="darkgreen")) + 
+  geom_line(data=mean.reg.df, aes(x=Volatility, y = mae, group = 1, color="blue")) + 
+  geom_line(data=mean.ran.df, aes(x=Volatility, y = mae, group = 1, color="purple")) + 
+  geom_point() + 
+  theme_minimal() +
+  ggtitle("Average MAE Accuracy comparison between predictive models, buckets/bin = 5, repeats = 30") + 
+  labs(color="Model") + ylab("Log 2 MAE") +
+  scale_color_manual(labels = c("ARM", "SVR", "REG", "RAN"), values = c("red", "darkgreen", "blue", "purple")) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title=element_text(size=12, hjust=0.55)) +
+  scale_y_continuous(trans='log2')
+
+aMAE
 ```
 
 
@@ -307,95 +776,847 @@ sampled.buckets[[1]]
 
 
 
+We can then median the results of all 30 repeats and graph it.
+```{R}
+median.arm.df <- aggregate(rmse ~ Volatility, data = cleaned.arm.df, FUN = median)
+median.svm.df <- aggregate(rmse ~ Volatility, data = cleaned.svm.df, FUN = median)
+median.reg.df <- aggregate(rmse ~ Volatility, data = cleaned.reg.df, FUN = median)
+median.ran.df <- aggregate(rmse ~ Volatility, data = cleaned.ran.df, FUN = median)
 
+mRMSE = ggplot() +
+  geom_line(data=median.arm.df, aes(x=Volatility, y = rmse, group = 1, color="red")) + 
+  geom_line(data=median.svm.df, aes(x=Volatility, y = rmse, group = 1, color="darkgreen")) + 
+  geom_line(data=median.reg.df, aes(x=Volatility, y = rmse, group = 1, color="blue")) + 
+  geom_line(data=median.ran.df, aes(x=Volatility, y = rmse, group = 1, color="purple")) + 
+  geom_point() + 
+  theme_minimal() +
+  ggtitle("Median RMSE Accuracy comparison between predictive models, buckets/bin = 5, repeats = 30") + 
+  labs(color="Model") + ylab("Log 2 RMSE") +
+  scale_color_manual(labels = c("ARM", "SVR", "REG", "RAN"), values = c("red", "darkgreen", "blue", "purple")) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title=element_text(size=12, hjust=0.55)) +
+  scale_y_continuous(trans='log2')
 
+mRMSE
+```
 
+```{R}
+median.arm.df <- aggregate(qlike ~ Volatility, data = cleaned.arm.df, FUN = median)
+median.svm.df <- aggregate(qlike ~ Volatility, data = cleaned.svm.df, FUN = median)
+median.reg.df <- aggregate(qlike ~ Volatility, data = cleaned.reg.df, FUN = median)
+median.ran.df <- aggregate(qlike ~ Volatility, data = cleaned.ran.df, FUN = median)
 
+mQLIKE = ggplot() +
+  geom_line(data=median.arm.df, aes(x=Volatility, y = qlike, group = 1, color="red")) + 
+  geom_line(data=median.svm.df, aes(x=Volatility, y = qlike, group = 1, color="darkgreen")) + 
+  geom_line(data=median.reg.df, aes(x=Volatility, y = qlike, group = 1, color="blue")) + 
+  geom_line(data=median.ran.df, aes(x=Volatility, y = qlike, group = 1, color="purple")) + 
+  geom_point() + 
+  theme_minimal() +
+  ggtitle("Median QLIKE Accuracy comparison between predictive models, buckets/bin = 5, repeats = 30") + 
+  labs(color="Model") + ylab("Log 2 QLIKE") +
+  scale_color_manual(labels = c("ARM", "SVR", "REG", "RAN"), values = c("red", "darkgreen", "blue", "purple")) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title=element_text(size=12, hjust=0.55)) +
+  scale_y_continuous(trans='log2')
 
+mQLIKE
+```
 
+```{R}
+median.arm.df <- aggregate(mae ~ Volatility, data = cleaned.arm.df, FUN = median)
+median.svm.df <- aggregate(mae ~ Volatility, data = cleaned.svm.df, FUN = median)
+median.reg.df <- aggregate(mae ~ Volatility, data = cleaned.reg.df, FUN = median)
+median.ran.df <- aggregate(mae ~ Volatility, data = cleaned.ran.df, FUN = median)
 
+mMAE = ggplot() +
+  geom_line(data=median.arm.df, aes(x=Volatility, y = mae, group = 1, color="red")) + 
+  geom_line(data=median.svm.df, aes(x=Volatility, y = mae, group = 1, color="darkgreen")) + 
+  geom_line(data=median.reg.df, aes(x=Volatility, y = mae, group = 1, color="blue")) + 
+  geom_line(data=median.ran.df, aes(x=Volatility, y = mae, group = 1, color="purple")) + 
+  geom_point() + 
+  theme_minimal() +
+  ggtitle("Median MAE Accuracy comparison between predictive models, buckets/bin = 5, repeats = 30") + 
+  labs(color="Model") + ylab("Log 2 MAE") +
+  scale_color_manual(labels = c("ARM", "SVR", "REG", "RAN"), values = c("red", "darkgreen", "blue", "purple")) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title=element_text(size=12, hjust=0.55)) +
+  scale_y_continuous(trans='log2')
 
+mMAE
+```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-####Not decided yet
 ```{r}
-svm_model <- function(meaned_df) {
+my_save1 = list(aRMSE = aRMSE, aQLIKE = aQLIKE, aMAE = aMAE, mRMSE = mRMSE, mQLIKE = mQLIKE, mMAE = mMAE)
+saveRDS(my_save1,"my_save1.rds")
+```
+
+```{r}
+ran_model_tr <- function(bucket) {
+  bucket <- complete_bucket(bucket)
+  meaned_df <- calculate_using_mean_time_bucket(bucket)
+  meaned_df <- transform(meaned_df, trend = as.factor(trend))
+  predicted <- c()
   
+  train <- meaned_df[1:16, ]
+  train$trend <- factor(train$trend)
+  test <- meaned_df[17, ]
+  rf_res <- randomForest::randomForest(trend ~ time_bucket, data = train)
+  fit <- predict(rf_res, newdata = test)
+  predicted <- append(predicted, fit)
+  
+  train <- meaned_df[2:17, ]
+  train$trend <- factor(train$trend)
+  test <- meaned_df[18, ]
+  rf_res <- randomForest::randomForest(trend ~ time_bucket, data = train)
+  fit <- predict(rf_res, newdata = test)
+  predicted <- append(predicted, fit)
+  
+  train <- meaned_df[3:18, ]
+  train$trend <- factor(train$trend)
+  test <- meaned_df[19, ]
+  rf_res <- randomForest::randomForest(trend ~ time_bucket, data = train)
+  fit <- predict(rf_res, newdata = test)
+  predicted <- append(predicted, fit)
+  
+  train <- meaned_df[4:19, ]
+  train$trend <- factor(train$trend)
+  test <- meaned_df[20, ]
+  rf_res <- randomForest::randomForest(trend ~ time_bucket, data = train)
+  fit <- predict(rf_res, newdata = test)
+  predicted <- append(predicted, fit)
+  
+  result <- data.frame(x = predicted, y = meaned_df[17:20, ] %>% select("trend"))
+  colnames(result) <- c('predicted', 'actual')
+  result <- transform(result, predicted=as.numeric(predicted) - 2, actual=as.numeric(actual) - 2)
+  return (result)
+}
+```
+
+#Given a bucket, perform svm prediction for the trend
+```{r}
+svm_model_tr <- function(bucket) {
+  bucket <- complete_bucket(bucket)
+  meaned_df <- calculate_using_mean_time_bucket(bucket)
+  meaned_df <- transform(meaned_df, trend = as.factor(trend))
   predicted <- c()
   
   train.X <- meaned_df[1:16, ] %>% select(c("time_bucket"))
-  train.Y <- meaned_df[1:16, ] %>% select("volatility")
+  train.Y <- meaned_df[1:16, ] %>% select("trend")
   test.X <- meaned_df[17, ] %>% select(c("time_bucket"))
-  test.Y <- meaned_df[17, ] %>% select("volatility")
-  svm_res <- e1071::svm(x = train.X, y = train.Y)
+  test.Y <- meaned_df[17, ] %>% select("trend")
+  svm_res <- e1071::svm(x = train.X, y = train.Y, kernel="linear", type="C-classification")
   fit <- predict(svm_res, test.X)
   predicted <- append(predicted, fit)
   
   train.X <- meaned_df[2:17, ] %>% select(c("time_bucket"))
-  train.Y <- meaned_df[2:17, ] %>% select("volatility")
+  train.Y <- meaned_df[2:17, ] %>% select("trend")
   test.X <- meaned_df[18, ] %>% select(c("time_bucket"))
-  test.Y <- meaned_df[18, ] %>% select("volatility")
-  svm_res <- e1071::svm(x = train.X, y = train.Y)
+  test.Y <- meaned_df[18, ] %>% select("trend")
+  svm_res <- e1071::svm(x = train.X, y = train.Y, kernel="linear", type="C-classification")
   fit <- predict(svm_res, test.X)
   test.Y <- as.list(test.Y)
   predicted <- append(predicted, fit)
   
   train.X <- meaned_df[3:18, ] %>% select(c("time_bucket"))
-  train.Y <- meaned_df[3:18, ] %>% select("volatility")
+  train.Y <- meaned_df[3:18, ] %>% select("trend")
   test.X <- meaned_df[19, ] %>% select(c("time_bucket"))
-  test.Y <- meaned_df[19, ] %>% select("volatility")
-  svm_res <- e1071::svm(x = train.X, y = train.Y)
+  test.Y <- meaned_df[19, ] %>% select("trend")
+  svm_res <- e1071::svm(x = train.X, y = train.Y, kernel="linear", type="C-classification")
   fit <- predict(svm_res, test.X)
   predicted <- append(predicted, fit)
   
   train.X <- meaned_df[4:19, ] %>% select(c("time_bucket"))
-  train.Y <- meaned_df[4:19, ] %>% select("volatility")
+  train.Y <- meaned_df[4:19, ] %>% select("trend")
   test.X <- meaned_df[20, ] %>% select(c("time_bucket"))
-  test.Y <- meaned_df[20, ] %>% select("volatility")
-  svm_res <- e1071::svm(x = train.X, y = train.Y)
+  test.Y <- meaned_df[20, ] %>% select("trend")
+  svm_res <- e1071::svm(x = train.X, y = train.Y, kernel="linear", type="C-classification")
   fit <- predict(svm_res, test.X)
   predicted <- append(predicted, fit)
   
-  result <- data.frame(x = predicted, y = meaned_df[17:20, ] %>% select("volatility"))
-  colnames(result) <- c('predicted_volatility', 'actual_volatility')
+  result <- data.frame(x = predicted, y = meaned_df[17:20, ] %>% select("trend"))
+  colnames(result) <- c('predicted', 'actual')
+  result <- transform(result, predicted=as.numeric(predicted)-2, actual=as.numeric(actual)-2)
   return (result)
 }
-result <- svm_model(one.bucket)
-MSE(result)
-QLIKE(result)
-#mae(result$actual_volatility, result$predicted_volatility)
+
 ```
+
+#Given a bucket, perform linear regression prediction for the trend
+```{r}
+knn_model_tr <- function(bucket) {
+  bucket <- complete_bucket(bucket)
+  meaned_df <- calculate_using_mean_time_bucket(bucket)
+  meaned_df <- transform(meaned_df, trend = as.factor(trend))
+  predicted <- c()
+  
+  train.X <- meaned_df[1:16, ] %>% select(c("time_bucket"))
+  train.Y <- meaned_df[1:16, ] %>% select("trend")
+  test.X <- meaned_df[17, ] %>% select(c("time_bucket"))
+  test.Y <- meaned_df[17, ] %>% select("trend")
+  knn_res <- class::knn(train = train.X[,'time_bucket'], test = test.X[,'time_bucket'], cl = train.Y[,'trend'], k = 5)
+  predicted <- append(predicted, knn_res)
+  
+  train.X <- meaned_df[2:17, ] %>% select(c("time_bucket"))
+  train.Y <- meaned_df[2:17, ] %>% select("trend")
+  test.X <- meaned_df[18, ] %>% select(c("time_bucket"))
+  test.Y <- meaned_df[18, ] %>% select("trend")
+  knn_res <- class::knn(train = train.X[,'time_bucket'], test = test.X[,'time_bucket'], cl = train.Y[,'trend'], k = 5)
+  predicted <- append(predicted, knn_res)
+  
+  train.X <- meaned_df[3:18, ] %>% select(c("time_bucket"))
+  train.Y <- meaned_df[3:18, ] %>% select("trend")
+  test.X <- meaned_df[19, ] %>% select(c("time_bucket"))
+  test.Y <- meaned_df[19, ] %>% select("trend")
+  knn_res <- class::knn(train = train.X[,'time_bucket'], test = test.X[,'time_bucket'], cl = train.Y[,'trend'], k = 5)
+  predicted <- append(predicted, knn_res)
+  
+  train.X <- meaned_df[4:19, ] %>% select(c("time_bucket"))
+  train.Y <- meaned_df[4:19, ] %>% select("trend")
+  test.X <- meaned_df[20, ] %>% select(c("time_bucket"))
+  test.Y <- meaned_df[20, ] %>% select("trend")
+  knn_res <- class::knn(train = train.X[,'time_bucket'], test = test.X[,'time_bucket'], cl = train.Y[,'trend'], k = 5)
+  predicted <- append(predicted, knn_res)
+  
+  result <- data.frame(x = predicted, y = meaned_df[17:20, ] %>% select("trend"))
+  colnames(result) <- c('predicted', 'actual')
+  result <- transform(result, predicted=as.numeric(predicted)-2, actual=as.numeric(actual)-2)
+  return (result)
+}
+```
+
+
+#Everything is lower is better
+Absolute error is the absolute difference between the predicted and the actual i.e., actual: -1, predicted: 1, abs_error = 2
+Mean_error is obsolete cuz its not as good as describing accuracy as absolute
+```{r}
+Absolute_error <- function(results) {
+  predicted <- results$predicted
+  actual <- results$actual
+  return (sum(abs(predicted - actual)))
+}
+#We do not use this one
+Mean_error <- function(results) {
+  predicted <- results$predicted
+  actual <- results$actual
+  return (mean(predicted != actual))
+}
+```
+
+This randomly selects buckets given the number of buckets,
+calculates the actual trend,
+predicts the trend like a streaming classifier using three models
+Then outputs a table of accuracies
+Warning: it takes an hour to run
+```{r, warning=FALSE}
+set.seed(3888)
+
+number_of_buckets <- 20000
+
+number_of_time_ids <- floor(number_of_buckets/length(stock.data))
+
+time_ids <- sample(unique(stock.data[[1]]$time_id), number_of_time_ids)
+length(time_ids)
+
+predict_trend_bucket <- function(bucket, model) {
+  abs_error <- c()
+  mean_error <- c()
+  
+  results <- model(bucket)
+  abs_error <- append(abs_error, Absolute_error(results))
+  mean_error <- append(mean_error, Mean_error(results))
+  d <- data.frame("abs_error" = abs_error, "mean_error" = mean_error)
+  return(d)
+}
+
+calculate_trend_fluctuations <- function(bucket) {
+  trend <- calculate_using_mean_time_bucket(bucket)$trend
+  change <- 0
+  for (i in 1:(length(trend) - 1)) {
+    if (trend[i + 1] != trend[i]) {
+      change <- change + 1
+    }
+  }
+  return(change)
+}
+
+
+accuracy_svm <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(accuracy_svm) <- c("abs_error", "mean_error")
+
+accuracy_knn <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(accuracy_knn) <- c("abs_error", "mean_error")
+
+accuracy_ran <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(accuracy_ran) <- c("abs_error", "mean_error")
+
+t_stat <- c()
+
+for (i in seq_along(stock.data)) {
+  stock <- stock.data[[i]]
+  print(i)
+  for (j in time_ids) {
+    errored <- FALSE
+    tryCatch( {
+      bucket <- stock[stock$time_id == j, ]
+      bucket <- complete_bucket(bucket)
+      svm_result <- predict_trend_bucket(bucket, svm_model_tr)
+      knn_result <- predict_trend_bucket(bucket, knn_model_tr)
+      ran_result <- predict_trend_bucket(bucket, ran_model_tr)
+    }, error = function(e) {
+      errored <- TRUE
+    })
+    
+    if (!errored) {
+      t_stat <- append(t_stat, calculate_trend_fluctuations(bucket))
+      accuracy_svm <- rbind(accuracy_svm, svm_result)
+      accuracy_knn <- rbind(accuracy_knn, knn_result)
+      accuracy_ran <- rbind(accuracy_ran, ran_result)
+    }
+  }
+}
+```
+
+This shows the distribution of fluctuations.
+We picked 20000 buckets, and each bucket has a fluctuation
+Fluctuation is defined as the number of trend changes, noted as the second derivative of price
+So, the vector 0 1 1 -1 will have a fluctuation of 2 because the numbers have changed twice.
+We can see that most buckets hav ea fluctuation betwen 10 and 12.
+```{r}
+#Ignore this one
+min_count_stat <- 10000
+
+for (stat in unique(t_stat)) {
+  if (length(t_stat[t_stat==stat]) < min_count_stat) {
+    min_count_stat <- length(t_stat[t_stat==stat])
+  }
+}
+
+unique.x <- unique(t_stat)
+count.y <- c()
+
+for (stat.x in unique.x) {
+  count.y <- append(count.y, length(t_stat[t_stat==stat.x]))
+}
+
+plot(x=unique.x, y=count.y, xlab="fluctuation", ylab="count", main="Distribution of fluctuation between randomly selected buckets")
+```
+
+#Sbows the heatmap for knn
+So this shows how well the model does in a specific fluctuation level and how much aboslute error it gains.
+There is a trend shown by the line of best fit.
+threshold specifies the number of buckets in each fluctuation to simulate a uniform distirbution because the one before is a bell curve and since we want to be fair we use unifrom
+```{r, warning=FALSE}
+#Specify the number of buckets in each fluctuations
+threshold <- 500
+keep <- c()
+
+for (i in seq_along(unique.x)) {
+  if (count.y[i] >= threshold) {
+    keep <- append(keep, unique.x[i])
+  }
+}
+
+df <- data.frame(x = t_stat, y=accuracy_knn$abs_error)
+df <- df[df$x %in% keep, ]
+
+uniform.df <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(uniform.df) <- c("x", "y")
+
+for (stat in unique(df$x)) {
+  count <- 0
+  for (i in 1:nrow(df)) {
+    if (df[i, "x"] == stat) {
+      uniform.df <- rbind(uniform.df, df[i, ])
+      count <- count + 1
+      if (count == threshold) {
+        break
+      }
+    }
+  }
+}
+
+x <- uniform.df$x
+y <- uniform.df$y
+
+df <- data.frame(x,y)
+m <- matrix(data=NA, nrow=max(y) - min(y) + 1, ncol=max(x) - min(x) + 1)
+
+colnames(m) <- min(x):max(x)
+rownames(m) <- min(y):max(y)
+
+for (i in 1:ncol(m)) {
+  fluc <- as.numeric(colnames(m)[i])
+  for (j in 1:nrow(m)) {
+    err <- as.numeric(rownames(m)[j])
+    value <- 0
+    for (k in 1:nrow(df)) {
+      if ((df[k, "x"] == fluc) & (df[k, "y"] == err)) {
+        value <- value + 1
+      }
+    }
+    m[j, i] <- value
+  }
+}
+
+melted_m <- melt(m)
+
+colnames(melted_m) <- c("Absolute_Error", "Fluctuations", "Count")
+
+knn_line <- lm(y ~ x)
+summary(knn_line)
+
+knn_graph = 
+  ggplot(data = melted_m, aes(x=Fluctuations, y=Absolute_Error, fill=Count)) + 
+  geom_tile(color="black") +
+  theme_minimal() +
+  scale_fill_gradient2(high = "red", mid = "white") + 
+  scale_x_discrete(limits=c(min(x):max(x))) + 
+  scale_y_discrete(limits=c(min(y):max(y))) +
+  theme(axis.line = element_line(color='transparent'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.text.x = element_text(hjust=0.5),axis.ticks.margin=unit(2,'cm'),
+    plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Fluctuation vs Absolute_error (knn) (count per fluctuation = 500)") + 
+  geom_abline(intercept=coef(knn_line)[1], slope=coef(knn_line)[2], color="blue")
+
+knn_graph
+```
+#Same graph here for svm
+```{r, warning=FALSE}
+#Specify the number of buckets in each fluctuations
+threshold <- 500
+keep <- c()
+
+for (i in seq_along(unique.x)) {
+  if (count.y[i] >= threshold) {
+    keep <- append(keep, unique.x[i])
+  }
+}
+
+df <- data.frame(x = t_stat, y=accuracy_svm$abs_error)
+df <- df[df$x %in% keep, ]
+
+uniform.df <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(uniform.df) <- c("x", "y")
+
+for (stat in unique(df$x)) {
+  count <- 0
+  for (i in 1:nrow(df)) {
+    if (df[i, "x"] == stat) {
+      uniform.df <- rbind(uniform.df, df[i, ])
+      count <- count + 1
+      if (count == threshold) {
+        break
+      }
+    }
+  }
+}
+
+x <- uniform.df$x
+y <- uniform.df$y
+
+df <- data.frame(x,y)
+m <- matrix(data=NA, nrow=max(y) - min(y) + 1, ncol=max(x) - min(x) + 1)
+
+colnames(m) <- min(x):max(x)
+rownames(m) <- min(y):max(y)
+
+for (i in 1:ncol(m)) {
+  fluc <- as.numeric(colnames(m)[i])
+  for (j in 1:nrow(m)) {
+    err <- as.numeric(rownames(m)[j])
+    value <- 0
+    for (k in 1:nrow(df)) {
+      if ((df[k, "x"] == fluc) & (df[k, "y"] == err)) {
+        value <- value + 1
+      }
+    }
+    m[j, i] <- value
+  }
+}
+
+melted_m <- melt(m)
+
+colnames(melted_m) <- c("Absolute_Error", "Fluctuations", "Count")
+
+svm_line <- lm(y ~ x)
+summary(svm_line)
+
+svm_graph = 
+  ggplot(data = melted_m, aes(x=Fluctuations, y=Absolute_Error, fill=Count)) + 
+  geom_tile(color="black") +
+  theme_minimal() +
+  scale_fill_gradient2(high = "red", mid = "white") + 
+  scale_x_discrete(limits=c(min(x):max(x))) + 
+  scale_y_discrete(limits=c(min(y):max(y))) +
+  theme(axis.line = element_line(color='transparent'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.text.x = element_text(hjust=0.5),axis.ticks.margin=unit(2,'cm'),
+    plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Fluctuation vs Absolute_error (svm) (count per fluctuation = 500)") + 
+  geom_abline(intercept=coef(svm_line)[1], slope=coef(svm_line)[2], color="blue")
+
+
+svm_graph
+```
+
+#Same graph here for ran
+```{r, warning=FALSE}
+#Specify the number of buckets in each fluctuations
+threshold <- 500
+keep <- c()
+
+for (i in seq_along(unique.x)) {
+  if (count.y[i] >= threshold) {
+    keep <- append(keep, unique.x[i])
+  }
+}
+
+df <- data.frame(x = t_stat, y=accuracy_ran$abs_error)
+df <- df[df$x %in% keep, ]
+
+uniform.df <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(uniform.df) <- c("x", "y")
+
+for (stat in unique(df$x)) {
+  count <- 0
+  for (i in 1:nrow(df)) {
+    if (df[i, "x"] == stat) {
+      uniform.df <- rbind(uniform.df, df[i, ])
+      count <- count + 1
+      if (count == threshold) {
+        break
+      }
+    }
+  }
+}
+
+x <- uniform.df$x
+y <- uniform.df$y
+
+df <- data.frame(x,y)
+m <- matrix(data=NA, nrow=max(y) - min(y) + 1, ncol=max(x) - min(x) + 1)
+
+colnames(m) <- min(x):max(x)
+rownames(m) <- min(y):max(y)
+
+for (i in 1:ncol(m)) {
+  fluc <- as.numeric(colnames(m)[i])
+  for (j in 1:nrow(m)) {
+    err <- as.numeric(rownames(m)[j])
+    value <- 0
+    for (k in 1:nrow(df)) {
+      if ((df[k, "x"] == fluc) & (df[k, "y"] == err)) {
+        value <- value + 1
+      }
+    }
+    m[j, i] <- value
+  }
+}
+
+melted_m <- melt(m)
+
+colnames(melted_m) <- c("Absolute_Error", "Fluctuations", "Count")
+
+ran_line <- lm(y ~ x)
+summary(ran_line)
+
+ran_graph = 
+  ggplot(data = melted_m, aes(x=Fluctuations, y=Absolute_Error, fill=Count)) + 
+  geom_tile(color="black") +
+  theme_minimal() +
+  scale_fill_gradient2(high = "red", mid = "white") + 
+  scale_x_discrete(limits=c(min(x):max(x))) + 
+  scale_y_discrete(limits=c(min(y):max(y))) +
+  theme(axis.line = element_line(color='transparent'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.text.x = element_text(hjust=0.5),axis.ticks.margin=unit(2,'cm'),
+    plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Fluctuation vs Absolute_error (ran) (count per fluctuation = 500)") +
+  geom_abline(intercept=coef(ran_line)[1], slope=coef(ran_line)[2], color="blue")
+
+ran_graph
+```
+
+
+```{r}
+predict_accuracy <- function(acc_line, fluctuations) {
+  return (1 - (acc_line$coefficients[1] + fluctuations * acc_line$coefficients[2])/8)
+}
+```
+
+This is the graph with all the line of best fit from ran, svm, knn all together
+Can compare to see which one performs better on average on different fluctuations
+```{r, warning=FALSE}
+
+model_graph = 
+  ggplot() +
+  theme_minimal()+
+  xlim(7,15) +
+  ylim(0, 8) +
+  xlab("Fluctuations") + ylab("Absolute error") +
+  geom_abline(aes(intercept=coef(knn_line)[1], slope=coef(knn_line)[2], color="red")) +
+  geom_abline(aes(intercept=coef(svm_line)[1], slope=coef(svm_line)[2], color="darkgreen")) +
+  geom_abline(aes(intercept=coef(ran_line)[1], slope=coef(ran_line)[2], color="blue")) +
+  scale_color_manual(name="Models", labels = c("KNN", "SVM", "RAN"), values = c("red", "darkgreen", "blue")) +
+  ggtitle("Accuracies of models predicting trend vs fluctuation (lower is better)") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+model_graph
+```
+
+This is for the shiny app, and basically the final product
+- Predicts the next 30 seconds based on last 480 (must input 600 seconds of data to predict the next 30 seconds (630))
+- PRedicts the trend based on what fluctuation it is, if it is less than 11 we use knn and if it is more we use ran
+- Predicts volatility, we found in inno1 ARM was better so we use that
+- Predicts the accuracy of the trend prediction using the line of best fit.
+```{R}
+#Anything less than 11 gets knn
+#Anything more than 11 gets RAN
+#ARM was the best
+make_prediction <- function(bucket) {
+  #The ARM prediction
+  bucket <- complete_bucket(bucket)
+  meaned_df <- calculate_using_mean_time_bucket(bucket)
+  meaned_df <- transform(meaned_df, trend = as.factor(trend))
+  bucket <- calculate_WAP_BidAsk(bucket)
+  number_of_fluctuation <- calculate_trend_fluctuations(bucket)
+  
+  spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)), 
+                   mean.model = list(armaOrder = c(1, 1)), 
+                   distribution.model = "norm")
+  log_return <- calculate_log_return(bucket)
+  ARM <- ugarchfit(spec = spec, data = log_return %>% filter((seconds_in_bucket > 120) & (seconds_in_bucket <= 600)) %>% pull(log_return), solver = 'hybrid')
+  setfixed(spec) <- as.list(coef(ARM))
+  future.path <- fitted(ugarchpath(spec, n.sim = 30, m.sim = 1000))
+  future.path[is.na(future.path)] <- 0
+  predicted_volatility <- mean(sqrt(colSums(future.path ^ 2)))
+  
+  #The ran trend prediction
+  train <- meaned_df[5:20, ]
+  train$trend <- factor(train$trend)
+  test <- data.frame(time_bucket=c(21))
+  rf_res <- randomForest::randomForest(trend ~ time_bucket, data = train)
+  ran_res <- predict(rf_res, newdata = test)
+  
+  #The knn trend prediction
+  train.X <- meaned_df[5:20, ] %>% select(c("time_bucket"))
+  train.Y <- meaned_df[5:20, ] %>% select("trend")
+  knn_res <- class::knn(train = train.X[,'time_bucket'], test = 21, cl = train.Y[,'trend'], k = 5)
+  
+  if (number_of_fluctuation < 11) {
+    estimated_accuracy <- predict_accuracy(knn_line, number_of_fluctuation)
+  } else {
+    estimated_accuracy <- predict_accuracy(ran_line, number_of_fluctuation)
+  }
+  
+  if (number_of_fluctuation < 11) (
+    predicted_trend <- as.numeric(knn_res) - 2
+  ) else (
+    predicted_trend <- as.numeric(ran_res) - 2
+  )
+  
+  result <- data.frame(estimated_accuracy = estimated_accuracy, predicted_trend = predicted_trend, predicted_volatility = predicted_volatility)
+  return(result)
+}
+
+list_5 = make_prediction(test.bucket)
+list_5
+```
+
+```{r}
+test.bucket1 <- stock.data[[1]][stock.data[[1]]$time_id == 11, ]
+test.bucket2 <- stock.data[[1]][stock.data[[1]]$time_id == 16, ]
+test.bucket3 <- stock.data[[1]][stock.data[[1]]$time_id == 31, ]
+test.bucket4 <- stock.data[[1]][stock.data[[1]]$time_id == 62, ]
+```
+
+```{r}
+list_11 = make_prediction(test.bucket1)
+list_16 = make_prediction(test.bucket2)
+list_31 = make_prediction(test.bucket3)
+list_62 = make_prediction(test.bucket4)
+```
+
+```{r}
+my_save2 = list(knn_graph = knn_graph, svm_graph = svm_graph, ran_graph = ran_graph, model_graph = model_graph, list_5 = list_5, list_11 = list_11, list_16 = list_16, list_31 = list_31, list_62 = list_62)
+saveRDS(my_save2,"my_save2.rds")
+```
+
+Shiny app 1
+```{r, eval=FALSE} 
+library(shiny)
+library(shinythemes)
+
+Data = readRDS("my_save1.rds")
+aRMSE = Data$aRMSE
+aQLIKE = Data$aQLIKE
+aMAE = Data$aMAE
+mRMSE = Data$mRMSE
+mQLIKE = Data$mQLIKE
+mMAE = Data$mMAE
+# Define UI for app
+ui <- fluidPage(theme = shinytheme("cyborg"),
+  titlePanel("Average & Median MAE Accuracy Comparison"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput(inputId = "Accuracy_measurement_average", label = "Choose a measurement (Average):",
+                  choices = c("Average RMSE", "Average QLIKE", "Average MAE")),
+      selectInput(inputId = "Accuracy_measurement_median", label = "Choose a measurement (Median):",
+                  choices = c("Median RMSE","Median QLIKE","Median MAE")),
+      textOutput(outputId = "explanation")
+      #numericInput(inputId = "number", label = "", value = , min = , max = )
+    ),
+    mainPanel(
+      plotOutput(outputId = "plot1"),
+      plotOutput(outputId = "plot2")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output) {
+  
+  
+  output$plot1 <- renderPlot({
+    if (input$Accuracy_measurement_average == "Average RMSE") {
+      aRMSE
+    } else if (input$Accuracy_measurement_average == "Average QLIKE") {
+      aQLIKE
+    } else if (input$Accuracy_measurement_average == "Average MAE") {
+      aMAE
+    }
+  })
+  
+  output$plot2 <- renderPlot({
+    if (input$Accuracy_measurement_median == "Median RMSE") {
+      mRMSE
+    } else if (input$Accuracy_measurement_median == "Median QLIKE") {
+      mQLIKE
+    } else if (input$Accuracy_measurement_median == "Median MAE") {
+      mMAE
+    } 
+  })
+  output$explanation <- renderText({
+    "After comparison, we discover that ARMA-GARCH is the most accurate method, with performing a lowest score in all measurements."
+  })
+ # output$numeric_plot <- 
+  }
+
+# Run the app
+shinyApp(ui, server)
+
+
+```
+
+
+
+Shiny app 2
+```{r, eval=FALSE}
+library(shiny)
+library(shinythemes)
+
+# name 3 model names(knn_graph, svm_graph, ran_graph, model_graph) model_graph is the only line graph, others are heatmaps
+
+# Add this at the bottom of rmd file
+# my_save2 = list(knn_graph = knn_graph, svm_graph = svm_graph, ran_graph = ran_graph, model_graph = model_graph)
+# saveRDS(my_save2,"my_save2.rds")
+
+Data = readRDS("my_save2.rds")
+knn_graph = Data$knn_graph
+svm_graph = Data$svm_graph
+ran_graph = Data$ran_graph
+model_graph = Data$model_graph
+make_prediction = Data$make_prediction
+list_5 = Data$list_5
+list_11 = Data$list_11
+list_16 = Data$list_16
+list_31 = Data$list_31
+list_62 = Data$list_62
+
+# Define UI for app
+ui <- fluidPage(theme = shinytheme("cyborg"),
+  titlePanel("Different models' heatmaps"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput(inputId = "model", label = "Choose a model",
+                  choices = c("KNN Model", "SVM Model", "Random Forest Model")),
+      #numericInput(inputId = "prediction", label = "Input a time bucket",value = 1, min = 1, max = 600),
+      numericInput(inputId = "number", label = "Input a fluctuation integer", value = 1, min = 0, max = 16),
+      selectInput(inputId = "model_2", label = "Choose a time_id (among 5, 11, 16, 31, 62)",
+                  choices = c("5","11","16","31","62"))
+      
+    ),
+    mainPanel(
+      plotOutput(outputId = "plot1", width = "90%", height = "300px"),
+      plotOutput(outputId = "plot2", width = "90%", height = "300px"),
+      verbatimTextOutput(outputId = "prediction"),
+      verbatimTextOutput(outputId = "numeric_output")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output) {
+  
+  
+  output$plot1 <- renderPlot({
+    if (input$model == "KNN Model") {
+      knn_graph
+    } else if (input$model == "SVM Model") {
+      svm_graph
+    } else if (input$model == "Random Forest Model") {
+      ran_graph
+    }
+  })
+  
+  output$plot2 <- renderPlot({
+    model_graph
+  })
+  
+  output$prediction <- renderText({
+    if (input$model_2 == "5"){
+      paste("Estimated Accuracy:",list_5[1,1],"\nPredicted trend:",list_5[1,2],"\nPredicted Volatility:",list_5[1,3])
+    } else if (input$model_2 == "11"){
+      paste("Estimated Accuracy:",list_11[1,1],"\nPredicted trend:",list_11[1,2],"\nPredicted Volatility:",list_11[1,3])
+    } else if (input$model_2 == "16"){
+      paste("Estimated Accuracy:",list_16[1,1],"\nPredicted trend:",list_16[1,2],"\nPredicted Volatility:",list_16[1,3])
+    } else if (input$model_2 == "31"){
+      paste("Estimated Accuracy:",list_31[1,1],"\nPredicted trend:",list_31[1,2],"\nPredicted Volatility:",list_31[1,3])
+    } else if (input$model_2 == "62"){
+      paste("Estimated Accuracy:",list_62[1,1],"\nPredicted trend:",list_62[1,2],"\nPredicted Volatility:",list_62[1,3])
+    }
+  })
+
+  
+  output$numeric_output <- renderPrint({
+    if (input$number <= 11 & input$number > 0) {
+      "You need to choose knn as the model."
+    } else if (input$number > 11){
+      "You should choose random forest as the model."
+    } else{
+      "This is not a valid input."
+    }
+  })
+  
+  # output$numeric_plot <- 
+}
+
+# Run the app
+shinyApp(ui, server)
+
+
+
+```
+
+
+
 
 

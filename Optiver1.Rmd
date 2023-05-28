@@ -32,7 +32,7 @@ library(Metrics)
 library(reshape2)
 ```
 
-####Exploratory analysis (idc)
+####Exploratory analysis
 ```{r}
 maximum_bid_price <- c()
 for (i in seq_along(stock.data)) {

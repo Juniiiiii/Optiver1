@@ -1,6 +1,9 @@
 # Optiver1
 
-Ensure that all the stock data are inside the same directory named "stocks"
+Download the stocks here: https://drive.google.com/drive/folders/1uBcF6iPAo3aiapULHqXFWub5b39DHhER?usp=sharing
+
+
+Unzip and ensure that all the stock data are inside the same directory named "stocks"
 e.g.,
 
 stocks/stock_0.csv
